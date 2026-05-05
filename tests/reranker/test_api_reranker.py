@@ -1,6 +1,6 @@
 """Tests for ApiReranker — uses stub OpenAI client via monkeypatch."""
 
-from zotero_arxiv_daily.reranker.api import ApiReranker
+from zotero_arxiv_daily2markdown.reranker.api import ApiReranker
 
 
 def test_api_reranker_similarity_shape(config, patch_openai):

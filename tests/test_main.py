@@ -28,10 +28,10 @@ def test_main_creates_executor_and_runs(config, monkeypatch):
         def run(self):
             calls.append(("run",))
 
-    monkeypatch.setattr("zotero_arxiv_daily.main.Executor", FakeExecutor)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.main.Executor", FakeExecutor)
 
     # Call main's body directly, bypassing @hydra.main
-    from zotero_arxiv_daily import main as main_mod
+    from zotero_arxiv_daily2markdown import main as main_mod
 
     # Simulate what @hydra.main does: calls main(config)
     main_mod.main.__wrapped__(config)
@@ -53,9 +53,9 @@ def test_main_debug_logging(config, monkeypatch):
         def run(self):
             pass
 
-    monkeypatch.setattr("zotero_arxiv_daily.main.Executor", FakeExecutor)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.main.Executor", FakeExecutor)
 
-    from zotero_arxiv_daily import main as main_mod
+    from zotero_arxiv_daily2markdown import main as main_mod
 
     main_mod.main.__wrapped__(config)
     # If we get here without error, the debug path executed successfully

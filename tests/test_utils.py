@@ -1,4 +1,4 @@
-"""Tests for zotero_arxiv_daily.utils: glob_match, send_email, tex extraction."""
+"""Tests for zotero_arxiv_daily2markdown.utils: glob_match, send_email, tex extraction."""
 
 import smtplib
 import tarfile
@@ -6,7 +6,7 @@ import io
 
 import pytest
 
-from zotero_arxiv_daily.utils import glob_match, send_email, extract_tex_code_from_tar
+from zotero_arxiv_daily2markdown.utils import glob_match, send_email, extract_tex_code_from_tar
 from tests.canned_responses import make_stub_smtp
 
 

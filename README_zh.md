@@ -43,10 +43,10 @@ uv sync
 ### 3. 运行
 ```bash
 # 抓取最新论文
-uv run python src/zotero_arxiv_daily/main.py
+uv run python src/zotero_arxiv_daily2markdown/main.py
 
 # 抓取特定日期的论文
-uv run python src/zotero_arxiv_daily/main.py executor.target_date="2026-05-01"
+uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
 ```
 
 ---

@@ -5,8 +5,8 @@ from omegaconf import DictConfig
 import hydra
 from loguru import logger
 import dotenv
-from zotero_arxiv_daily.executor import Executor
-from zotero_arxiv_daily.utils import to_bool
+from zotero_arxiv_daily2markdown.executor import Executor
+from zotero_arxiv_daily2markdown.utils import to_bool
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 dotenv.load_dotenv()
 
@@ -25,7 +25,7 @@ def main(config:DictConfig):
     )
     
     for logger_name in logging.root.manager.loggerDict:
-        if "zotero_arxiv_daily" in logger_name:
+        if "zotero_arxiv_daily2markdown" in logger_name:
             continue
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 

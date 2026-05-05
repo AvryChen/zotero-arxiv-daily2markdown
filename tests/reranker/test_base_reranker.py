@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from zotero_arxiv_daily.reranker.base import BaseReranker, get_reranker_cls
+from zotero_arxiv_daily2markdown.reranker.base import BaseReranker, get_reranker_cls
 from tests.canned_responses import make_sample_paper, make_sample_corpus
 
 

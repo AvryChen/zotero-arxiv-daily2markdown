@@ -1,12 +1,12 @@
-"""Tests for zotero_arxiv_daily.executor: normalize_path_patterns, filter_corpus, fetch_zotero_corpus, E2E."""
+"""Tests for zotero_arxiv_daily2markdown.executor: normalize_path_patterns, filter_corpus, fetch_zotero_corpus, E2E."""
 
 from datetime import datetime
 
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily.executor import Executor, normalize_path_patterns
-from zotero_arxiv_daily.protocol import CorpusPaper
+from zotero_arxiv_daily2markdown.executor import Executor, normalize_path_patterns
+from zotero_arxiv_daily2markdown.protocol import CorpusPaper
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def test_fetch_zotero_corpus(config, monkeypatch):
     from tests.canned_responses import make_stub_zotero_client
 
     stub_zot = make_stub_zotero_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
 
     executor = Executor.__new__(Executor)
     executor.config = config
@@ -133,7 +133,7 @@ def test_fetch_zotero_corpus_paper_with_zero_collections(config, monkeypatch):
         }
     ]
     stub_zot = make_stub_zotero_client(items=items)
-    monkeypatch.setattr("zotero_arxiv_daily.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
 
     executor = Executor.__new__(Executor)
     executor.config = config
@@ -170,21 +170,21 @@ def test_run_end_to_end(config, monkeypatch):
 
     # 1. Stub pyzotero
     stub_zot = make_stub_zotero_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
 
     # 2. Stub OpenAI (for reranker + TLDR/affiliations)
     stub_client = make_stub_openai_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.OpenAI", lambda **kw: stub_client)
-    monkeypatch.setattr("zotero_arxiv_daily.reranker.api.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.reranker.api.OpenAI", lambda **kw: stub_client)
     retrieved = [
         make_sample_paper(title="E2E Paper 1", score=None),
         make_sample_paper(title="E2E Paper 2", score=None),
     ]
 
     # Import to register the arxiv retriever
-    import zotero_arxiv_daily.retriever.arxiv_retriever  # noqa: F401
+    import zotero_arxiv_daily2markdown.retriever.arxiv_retriever  # noqa: F401
 
-    from zotero_arxiv_daily.retriever.base import registered_retrievers
+    from zotero_arxiv_daily2markdown.retriever.base import registered_retrievers
 
     monkeypatch.setattr(
         registered_retrievers["arxiv"],
@@ -197,7 +197,7 @@ def test_run_end_to_end(config, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP", make_stub_smtp(sent))
 
     # 5. Stub sleep (reranker/retriever)
-    monkeypatch.setattr("zotero_arxiv_daily.retriever.base.sleep", lambda _: None)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.retriever.base.sleep", lambda _: None)
 
     # 6. Run
     executor = Executor(config)
@@ -223,21 +223,21 @@ def test_run_no_papers_send_empty_false(config, monkeypatch):
         config.executor.send_empty = False
 
     stub_zot = make_stub_zotero_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
 
     stub_client = make_stub_openai_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.OpenAI", lambda **kw: stub_client)
-    monkeypatch.setattr("zotero_arxiv_daily.reranker.api.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.reranker.api.OpenAI", lambda **kw: stub_client)
 
-    import zotero_arxiv_daily.retriever.arxiv_retriever  # noqa: F401
+    import zotero_arxiv_daily2markdown.retriever.arxiv_retriever  # noqa: F401
 
-    from zotero_arxiv_daily.retriever.base import registered_retrievers
+    from zotero_arxiv_daily2markdown.retriever.base import registered_retrievers
 
     monkeypatch.setattr(registered_retrievers["arxiv"], "retrieve_papers", lambda self: [])
 
     sent = []
     monkeypatch.setattr(smtplib, "SMTP", make_stub_smtp(sent))
-    monkeypatch.setattr("zotero_arxiv_daily.retriever.base.sleep", lambda _: None)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.retriever.base.sleep", lambda _: None)
 
     executor = Executor(config)
     executor.run()
@@ -259,21 +259,21 @@ def test_run_no_papers_send_empty_true(config, monkeypatch):
         config.executor.send_empty = True
 
     stub_zot = make_stub_zotero_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
 
     stub_client = make_stub_openai_client()
-    monkeypatch.setattr("zotero_arxiv_daily.executor.OpenAI", lambda **kw: stub_client)
-    monkeypatch.setattr("zotero_arxiv_daily.reranker.api.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.OpenAI", lambda **kw: stub_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.reranker.api.OpenAI", lambda **kw: stub_client)
 
-    import zotero_arxiv_daily.retriever.arxiv_retriever  # noqa: F401
+    import zotero_arxiv_daily2markdown.retriever.arxiv_retriever  # noqa: F401
 
-    from zotero_arxiv_daily.retriever.base import registered_retrievers
+    from zotero_arxiv_daily2markdown.retriever.base import registered_retrievers
 
     monkeypatch.setattr(registered_retrievers["arxiv"], "retrieve_papers", lambda self: [])
 
     sent = []
     monkeypatch.setattr(smtplib, "SMTP", make_stub_smtp(sent))
-    monkeypatch.setattr("zotero_arxiv_daily.retriever.base.sleep", lambda _: None)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.retriever.base.sleep", lambda _: None)
 
     executor = Executor(config)
     executor.run()

@@ -18,6 +18,6 @@ echo "=====================================" >> ./daily.log
 echo "Starting daily run at $(date)" >> ./daily.log
 
 # 运行主程序并将日志追加到 daily.log 中
-$UV_PATH run python src/zotero_arxiv_daily/main.py >> ./daily.log 2>&1
+$UV_PATH run python src/zotero_arxiv_daily2markdown/main.py >> ./daily.log 2>&1
 
 echo "Finished run at $(date)" >> ./daily.log

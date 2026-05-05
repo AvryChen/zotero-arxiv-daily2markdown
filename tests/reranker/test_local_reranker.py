@@ -2,7 +2,7 @@
 
 import pytest
 
-from zotero_arxiv_daily.reranker.local import LocalReranker
+from zotero_arxiv_daily2markdown.reranker.local import LocalReranker
 
 
 @pytest.mark.slow

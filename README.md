@@ -48,12 +48,12 @@ Key settings in `.env`:
 ### 3. Usage / 使用
 Run for the latest papers: / 抓取最新论文：
 ```bash
-uv run python src/zotero_arxiv_daily/main.py
+uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
 Run for a specific date: / 抓取指定日期的论文：
 ```bash
-uv run python src/zotero_arxiv_daily/main.py executor.target_date="2026-05-01"
+uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
 ```
 
 ---

@@ -1,4 +1,4 @@
-"""Tests for zotero_arxiv_daily.protocol: Paper.generate_tldr, Paper.generate_affiliations."""
+"""Tests for zotero_arxiv_daily2markdown.protocol: Paper.generate_tldr, Paper.generate_affiliations."""
 
 import pytest
 

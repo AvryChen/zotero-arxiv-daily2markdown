@@ -13,5 +13,5 @@ def patch_openai(monkeypatch):
     must patch the name in *its* namespace.
     """
     stub = make_stub_openai_client()
-    monkeypatch.setattr("zotero_arxiv_daily.reranker.api.OpenAI", lambda **kwargs: stub)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.reranker.api.OpenAI", lambda **kwargs: stub)
     return stub

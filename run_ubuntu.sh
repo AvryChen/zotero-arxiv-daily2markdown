@@ -22,6 +22,6 @@ if [ ! -f "$UV_PATH" ]; then
     UV_PATH=$(which uv)
 fi
 
-$UV_PATH run python src/zotero_arxiv_daily/main.py >> ./daily.log 2>&1
+$UV_PATH run python src/zotero_arxiv_daily2markdown/main.py >> ./daily.log 2>&1
 
 echo "Finished run at $(date)" >> ./daily.log
