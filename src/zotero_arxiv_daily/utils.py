@@ -13,6 +13,13 @@ import pymupdf.layout
 pymupdf.TOOLS.mupdf_display_errors(False)
 pymupdf.layout.activate()
 
+def to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
 import pymupdf4llm  # noqa: E402
 
 def extract_tex_code_from_tar(file_path:str, paper_id:str) -> dict[str,str]:

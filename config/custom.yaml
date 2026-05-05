@@ -15,12 +15,16 @@ llm:
     key: ${oc.env:OPENAI_API_KEY}
     base_url: ${oc.env:OPENAI_API_BASE}
   generation_kwargs:
-    model: gpt-4o-mini
+    model: ${oc.env:MODEL}
+  language: Chinese
 
 source:
   arxiv:
-    category: ["cs.AI","cs.CV","cs.LG","cs.CL"]
+    category: ["cond-mat"]
 
 executor:
   debug: ${oc.env:DEBUG,null}
   source: ['arxiv']
+
+hugo:
+  output_dir: ${oc.env:HUGO_OUTPUT_DIR,null}

@@ -30,6 +30,12 @@ llm:
     model: ???
   language: English # Preferred language for the TL;DR. Example: English
 
+prompt:
+  topic: "nickelate superconductors" # The research topic for AI overview.
+  role: "专业的学术编辑" # The role of the AI in generation.
+  overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，如果今天没有 {topic} 领域内的论文，请直接回复；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可"
+  translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
+
 reranker:
   local:
     model: jinaai/jina-embeddings-v5-text-nano # The Hugging Face model name of the local embedding model. Example: jinaai/jina-embeddings-v5-text-nano
@@ -46,6 +52,8 @@ reranker:
 executor:
   debug: false # Whether to use debug mode. Example: true
   send_empty: false # Whether to send an empty email even if no new papers today. Example: true
-  max_paper_num: 100 # The maximum number of the papers presented in the email. Example: 100
+  max_paper_num: 20 # The maximum number of the papers presented in the email. Example: 100
+  score_threshold: 3.0 # The minimum relevance score for a paper to be included. Example: 3.0
   source: ??? # The sources of papers to retrieve. Example: ['arxiv','biorxiv','medrxiv']
   reranker: local # The reranker to use. Example: 'local' or 'api'
+  target_date: null # The target date to fetch papers for (YYYY-MM-DD). If null, fetches the latest. Example: "2026-05-01"

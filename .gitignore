@@ -13,6 +13,8 @@ wheels/
 test.ipynb
 
 logs
+daily.log
+hugo_output/
 models
 test-compose.yml
 outputs

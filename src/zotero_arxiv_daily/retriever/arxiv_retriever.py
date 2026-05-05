@@ -12,6 +12,8 @@ from queue import Empty
 from typing import Any, Callable, TypeVar
 from loguru import logger
 import requests
+import time
+import random
 
 T = TypeVar("T")
 
@@ -116,27 +118,77 @@ class ArxivRetriever(BaseRetriever):
         client = arxiv.Client(num_retries=10, delay_seconds=10)
         query = '+'.join(self.config.source.arxiv.category)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
-        # Get the latest paper from arxiv rss feed
-        feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
-        if 'Feed error for query' in feed.feed.title:
-            raise Exception(f"Invalid ARXIV_QUERY: {query}.")
+        
+        target_date = self.config.executor.get("target_date")
         raw_papers = []
-        allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
-        all_paper_ids = [
-            i.id.removeprefix("oai:arXiv.org:")
-            for i in feed.entries
-            if i.get("arxiv_announce_type", "new") in allowed_announce_types
-        ]
+        
+        if target_date:
+            logger.info(f"Using OAI-PMH to fetch papers for target_date: {target_date}")
+            import requests
+            from xml.etree import ElementTree as ET
+            
+            def get_oai_set(cat: str) -> str:
+                physics_cats = {"cond-mat", "astro-ph", "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th", "math-ph", "nlin", "nucl-ex", "nucl-th", "quant-ph"}
+                main_cat = cat.split('.')[0]
+                if main_cat in physics_cats:
+                    return f"physics:{main_cat}"
+                return main_cat
+
+            all_paper_ids = []
+            for cat in self.config.source.arxiv.category:
+                oai_set = get_oai_set(cat)
+                url = f"http://export.arxiv.org/oai2?verb=ListIdentifiers&from={target_date}&until={target_date}&metadataPrefix=arXiv&set={oai_set}"
+                try:
+                    response = requests.get(url, timeout=30)
+                    response.raise_for_status()
+                    root = ET.fromstring(response.text)
+                    for record in root.findall(".//{http://www.openarchives.org/OAI/2.0/}identifier"):
+                        if record.text:
+                            all_paper_ids.append(record.text.replace("oai:arXiv.org:", ""))
+                except Exception as e:
+                    logger.warning(f"Failed to fetch OAI-PMH for {cat} on {target_date}: {e}")
+            
+            # Remove duplicates
+            all_paper_ids = list(set(all_paper_ids))
+            
+        else:
+            # Get the latest paper from arxiv rss feed
+            feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
+            if hasattr(feed.feed, 'title') and 'Feed error for query' in feed.feed.title:
+                raise Exception(f"Invalid ARXIV_QUERY: {query}.")
+            
+            allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
+            all_paper_ids = [
+                i.id.removeprefix("oai:arXiv.org:")
+                for i in feed.entries
+                if i.get("arxiv_announce_type", "new") in allowed_announce_types
+            ]
+
         if self.config.executor.debug:
             all_paper_ids = all_paper_ids[:10]
 
         # Get full information of each paper from arxiv api
         bar = tqdm(total=len(all_paper_ids))
-        for i in range(0, len(all_paper_ids), 20):
-            search = arxiv.Search(id_list=all_paper_ids[i:i + 20])
-            batch = list(client.results(search))
-            bar.update(len(batch))
-            raw_papers.extend(batch)
+        batch_size = 10
+        for i in range(0, len(all_paper_ids), batch_size):
+            if i > 0:
+                # Use a random sleep between 5-10 seconds to look more human
+                sleep_time = random.uniform(5.0, 10.0)
+                time.sleep(sleep_time)
+            
+            ids = all_paper_ids[i:i + batch_size]
+            try:
+                search = arxiv.Search(id_list=ids)
+                batch = list(client.results(search))
+                bar.update(len(batch))
+                raw_papers.extend(batch)
+            except Exception as e:
+                logger.warning(f"Failed to fetch batch {i//batch_size}: {e}. Retrying after 60s cooldown...")
+                time.sleep(60)
+                search = arxiv.Search(id_list=ids)
+                batch = list(client.results(search))
+                bar.update(len(batch))
+                raw_papers.extend(batch)
         bar.close()
 
         return raw_papers

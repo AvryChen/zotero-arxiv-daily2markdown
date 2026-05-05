@@ -6,13 +6,17 @@ import hydra
 from loguru import logger
 import dotenv
 from zotero_arxiv_daily.executor import Executor
+from zotero_arxiv_daily.utils import to_bool
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 dotenv.load_dotenv()
 
 @hydra.main(version_base=None, config_path="../../config", config_name="default")
 def main(config:DictConfig):
+    # Normalize debug flag
+    debug_mode = to_bool(config.executor.get("debug", False))
+    
     # Configure loguru log level based on config
-    log_level = "DEBUG" if config.executor.debug else "INFO"
+    log_level = "DEBUG" if debug_mode else "INFO"
     logger.remove()  # Remove default handler
     logger.add(
         sys.stdout,
@@ -25,7 +29,7 @@ def main(config:DictConfig):
             continue
         logging.getLogger(logger_name).setLevel(logging.WARNING)
 
-    if config.executor.debug:
+    if debug_mode:
         logger.info("Debug mode is enabled")
     
     executor = Executor(config)

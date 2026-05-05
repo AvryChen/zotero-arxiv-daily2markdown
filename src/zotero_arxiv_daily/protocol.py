@@ -18,12 +18,13 @@ class Paper:
     pdf_url: Optional[str] = None
     full_text: Optional[str] = None
     tldr: Optional[str] = None
+    tldr_en: Optional[str] = None
     affiliations: Optional[list[str]] = None
     score: Optional[float] = None
 
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')
-        prompt = f"Given the following information of a paper, generate a one-sentence TLDR summary in {lang}:\n\n"
+        prompt = f"Given the following information of a paper, generate a TLDR summary in {lang}:\n\n。其字数应该200-400字，描述了文章所使用的方法、得到的结论；请你尊重原始论文，如字数不够，可以减少字数，但不应出现文中没有的内容。你需要直接回答TLDR的正文部分，无需写标题、也无需介绍文章的名字。"
         if self.title:
             prompt += f"Title:\n {self.title}\n\n"
 
@@ -66,6 +67,28 @@ class Paper:
             tldr = self.abstract
             self.tldr = tldr
             return tldr
+
+    def generate_english_tldr(self, openai_client: OpenAI, llm_params: dict) -> str:
+        if not self.tldr:
+            return "No summary available to translate."
+        try:
+            prompt = f"Please translate the following Chinese summary of an academic paper into professional English. Only output the translated English text:\n\n{self.tldr}"
+            response = openai_client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a professional translator for academic papers. Please directly output the translated English text without any additional comments.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                **llm_params.get('generation_kwargs', {})
+            )
+            self.tldr_en = response.choices[0].message.content
+            return self.tldr_en
+        except Exception as e:
+            logger.warning(f"Failed to translate tldr of {self.url}: {e}")
+            self.tldr_en = self.abstract
+            return self.tldr_en
 
     def _generate_affiliations_with_llm(self, openai_client:OpenAI,llm_params:dict) -> Optional[list[str]]:
         if self.full_text is not None:
