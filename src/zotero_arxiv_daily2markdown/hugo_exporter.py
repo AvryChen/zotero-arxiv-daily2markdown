@@ -30,6 +30,24 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
     title_zh = f"{topic} 领域 arXiv 论文日常推送 {date_str}"
     title_en = f"arXiv Daily: {topic.capitalize()} {date_str}"
     
+    # Auto push to Github
+    if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
+        logger.info("Starting git operations for Hugo website...")
+        repo_dir = os.path.dirname(output_dir) if os.path.basename(output_dir) == "content" else output_dir
+        
+        try:
+            # Check if we are in a middle of a failed rebase/merge and abort it
+            if os.path.exists(os.path.join(repo_dir, ".git", "rebase-merge")) or \
+               os.path.exists(os.path.join(repo_dir, ".git", "rebase-apply")):
+                logger.warning("Detected a failed rebase. Aborting to reach a clean state.")
+                subprocess.run(["git", "rebase", "--abort"], cwd=repo_dir)
+
+            logger.info("Pulling latest changes from remote...")
+            # Use --autostash to keep any local changes safe
+            subprocess.run(["git", "pull", "--rebase", "--autostash", "-X", "theirs"], cwd=repo_dir)
+        except Exception as e:
+            logger.warning(f"Initial git pull failed: {e}. Proceeding anyway...")
+
     # Generate Chinese Version
     content_zh = [
         "---",
@@ -104,23 +122,23 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
         
     logger.info(f"Hugo markdown exported successfully to {filepath_zh} and {filepath_en}")
     
-    # Auto push to Github
+    # Commit and Push
     if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
-        logger.info("Starting git push to update Hugo website...")
         try:
-            repo_dir = os.path.dirname(output_dir) if os.path.basename(output_dir) == "content" else output_dir
-            
             subprocess.run(["git", "add", filepath_zh, filepath_en], cwd=repo_dir, check=True)
             commit_msg = f"Auto: Add arXiv daily for {date_str}"
-            subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+            # Check if there are changes to commit
+            status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
+            if status:
+                subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir)
+                logger.info("Committing changes...")
+            else:
+                logger.info("No changes to commit.")
             
-            logger.info("Pulling latest changes from remote...")
-            subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=repo_dir, check=True)
-            
+            logger.info("Pushing to remote...")
             subprocess.run(["git", "push"], cwd=repo_dir, check=True)
-            
-            logger.info("Successfully pushed to GitHub! Cloudflare should trigger a rebuild now.")
+            logger.info("Successfully pushed to GitHub!")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to auto push to Github. Error: {e}")
+            logger.error(f"Git operation failed. Error: {e}")
         except Exception as e:
             logger.error(f"Unexpected error during git push: {e}")
