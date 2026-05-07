@@ -33,7 +33,7 @@ llm:
 prompt:
   topic: "nickelate superconductors" # The research topic for AI overview.
   role: "专业的学术编辑" # The role of the AI in generation.
-  overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，如果今天没有 {topic} 领域内的论文，请直接回复；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可"
+  overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可"
   translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
 
 reranker:

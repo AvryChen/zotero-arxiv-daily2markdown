@@ -153,16 +153,62 @@ class ArxivRetriever(BaseRetriever):
             
         else:
             # Get the latest paper from arxiv rss feed
-            feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")
-            if hasattr(feed.feed, 'title') and 'Feed error for query' in feed.feed.title:
-                raise Exception(f"Invalid ARXIV_QUERY: {query}.")
-            
+            all_paper_ids = []
             allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
-            all_paper_ids = [
-                i.id.removeprefix("oai:arXiv.org:")
-                for i in feed.entries
-                if i.get("arxiv_announce_type", "new") in allowed_announce_types
-            ]
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            # ArXiv RSS feeds are usually per-category. If multiple categories are provided,
+            # we should fetch them individually or use the group if it's a group name.
+            # However, the current query joins them with '+', which might not work for RSS.
+            categories = self.config.source.arxiv.category
+            if isinstance(categories, str):
+                categories = [categories]
+            
+            for cat in categories:
+                feed_url = f"https://rss.arxiv.org/atom/{cat}"
+                logger.debug(f"Fetching arxiv rss feed from {feed_url}")
+                try:
+                    response = requests.get(feed_url, headers=headers, timeout=30)
+                    response.raise_for_status()
+                    feed = feedparser.parse(response.content)
+                    
+                    if hasattr(feed.feed, 'title') and 'Feed error for query' in feed.feed.title:
+                        logger.warning(f"Invalid ARXIV_QUERY: {cat}. Skipping.")
+                        continue
+                    
+                    cat_paper_ids = [
+                        i.id.removeprefix("oai:arXiv.org:")
+                        for i in feed.entries
+                        if i.get("arxiv_announce_type", "new") in allowed_announce_types
+                    ]
+                    logger.info(f"Found {len(feed.entries)} entries for {cat}, {len(cat_paper_ids)} matched types {allowed_announce_types}")
+                    all_paper_ids.extend(cat_paper_ids)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch RSS feed for {cat}: {e}")
+            
+            # Remove duplicates
+            all_paper_ids = list(set(all_paper_ids))
+            logger.info(f"Total {len(all_paper_ids)} unique papers found from RSS feeds")
+
+            # Fallback to search API if RSS is empty
+            if not all_paper_ids:
+                logger.info("RSS feed empty or failed. Falling back to Search API...")
+                try:
+                    search_query = ' OR '.join([f"cat:{cat}" for cat in categories])
+                    search = arxiv.Search(
+                        query=search_query,
+                        max_results=50,
+                        sort_by=arxiv.SortCriterion.SubmittedDate
+                    )
+                    results = list(client.results(search))
+                    raw_papers.extend(results)
+                    logger.info(f"Fallback search found {len(results)} latest papers for {search_query}")
+                    return raw_papers
+                except Exception as e:
+                    logger.warning(f"Fallback search failed: {e}")
 
         if self.config.executor.debug:
             all_paper_ids = all_paper_ids[:10]
