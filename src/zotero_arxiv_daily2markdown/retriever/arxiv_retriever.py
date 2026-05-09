@@ -197,10 +197,7 @@ class ArxivRetriever(BaseRetriever):
             if not all_paper_ids:
                 logger.info("RSS feed empty or failed. Falling back to Search API...")
                 try:
-                    import datetime
-                    date_limit = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y%m%d") + "0000"
-                    cat_query = ' OR '.join([f"cat:{cat}" for cat in categories])
-                    search_query = f"({cat_query}) AND submittedDate:[{date_limit} TO *]"
+                    search_query = ' OR '.join([f"cat:{cat}" for cat in categories])
                     search = arxiv.Search(
                         query=search_query,
                         max_results=50,
@@ -226,22 +223,31 @@ class ArxivRetriever(BaseRetriever):
                 time.sleep(sleep_time)
             
             ids = all_paper_ids[i:i + batch_size]
-            try:
-                search = arxiv.Search(id_list=ids)
-                batch = list(client.results(search))
-                bar.update(len(batch))
-                raw_papers.extend(batch)
-            except Exception as e:
-                logger.warning(f"Failed to fetch batch {i//batch_size}: {e}. Retrying after 60s cooldown...")
-                time.sleep(60)
+            attempts = 0
+            while attempts < 3:
                 try:
                     search = arxiv.Search(id_list=ids)
                     batch = list(client.results(search))
                     bar.update(len(batch))
                     raw_papers.extend(batch)
-                except Exception as e2:
-                    logger.error(f"Failed again on batch {i//batch_size}: {e2}. Skipping this batch to avoid blocking.")
-                    bar.update(len(ids))
+                    break
+                except Exception as e:
+                    attempts += 1
+                    logger.warning(f"Failed to fetch batch {i//batch_size} (attempt {attempts}/3): {e}")
+                    if attempts < 3:
+                        logger.info("Waiting 120s before retrying...")
+                        time.sleep(120)
+                    else:
+                        logger.error(f"Batch {i//batch_size} failed 3 times. Falling back to fetching one-by-one...")
+                        for single_id in ids:
+                            try:
+                                time.sleep(10)
+                                search = arxiv.Search(id_list=[single_id])
+                                single_batch = list(client.results(search))
+                                raw_papers.extend(single_batch)
+                            except Exception as e2:
+                                logger.error(f"Failed to fetch {single_id} permanently: {e2}")
+                        bar.update(len(ids))
         bar.close()
 
         return raw_papers
