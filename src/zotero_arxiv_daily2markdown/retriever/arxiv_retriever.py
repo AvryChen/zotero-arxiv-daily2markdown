@@ -115,7 +115,7 @@ class ArxivRetriever(BaseRetriever):
             raise ValueError("category must be specified for arxiv.")
 
     def _retrieve_raw_papers(self) -> list[ArxivResult]:
-        client = arxiv.Client(num_retries=10, delay_seconds=10)
+        client = arxiv.Client(num_retries=10, delay_seconds=20)
         query = '+'.join(self.config.source.arxiv.category)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
         
@@ -197,7 +197,10 @@ class ArxivRetriever(BaseRetriever):
             if not all_paper_ids:
                 logger.info("RSS feed empty or failed. Falling back to Search API...")
                 try:
-                    search_query = ' OR '.join([f"cat:{cat}" for cat in categories])
+                    import datetime
+                    date_limit = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y%m%d") + "0000"
+                    cat_query = ' OR '.join([f"cat:{cat}" for cat in categories])
+                    search_query = f"({cat_query}) AND submittedDate:[{date_limit} TO *]"
                     search = arxiv.Search(
                         query=search_query,
                         max_results=50,
@@ -231,10 +234,14 @@ class ArxivRetriever(BaseRetriever):
             except Exception as e:
                 logger.warning(f"Failed to fetch batch {i//batch_size}: {e}. Retrying after 60s cooldown...")
                 time.sleep(60)
-                search = arxiv.Search(id_list=ids)
-                batch = list(client.results(search))
-                bar.update(len(batch))
-                raw_papers.extend(batch)
+                try:
+                    search = arxiv.Search(id_list=ids)
+                    batch = list(client.results(search))
+                    bar.update(len(batch))
+                    raw_papers.extend(batch)
+                except Exception as e2:
+                    logger.error(f"Failed again on batch {i//batch_size}: {e2}. Skipping this batch to avoid blocking.")
+                    bar.update(len(ids))
         bar.close()
 
         return raw_papers

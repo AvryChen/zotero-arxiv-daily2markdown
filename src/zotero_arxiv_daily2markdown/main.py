@@ -12,6 +12,13 @@ dotenv.load_dotenv()
 
 @hydra.main(version_base=None, config_path="../../config", config_name="default")
 def main(config:DictConfig):
+    # Fix stdout encoding for Windows
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     # Normalize debug flag
     debug_mode = to_bool(config.executor.get("debug", False))
     
