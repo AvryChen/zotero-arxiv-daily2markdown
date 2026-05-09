@@ -124,7 +124,6 @@ class ArxivRetriever(BaseRetriever):
         
         if target_date:
             logger.info(f"Using OAI-PMH to fetch papers for target_date: {target_date}")
-            import requests
             from xml.etree import ElementTree as ET
             
             def get_oai_set(cat: str) -> str:
@@ -193,22 +192,7 @@ class ArxivRetriever(BaseRetriever):
             all_paper_ids = list(set(all_paper_ids))
             logger.info(f"Total {len(all_paper_ids)} unique papers found from RSS feeds")
 
-            # Fallback to search API if RSS is empty
-            if not all_paper_ids:
-                logger.info("RSS feed empty or failed. Falling back to Search API...")
-                try:
-                    search_query = ' OR '.join([f"cat:{cat}" for cat in categories])
-                    search = arxiv.Search(
-                        query=search_query,
-                        max_results=50,
-                        sort_by=arxiv.SortCriterion.SubmittedDate
-                    )
-                    results = list(client.results(search))
-                    raw_papers.extend(results)
-                    logger.info(f"Fallback search found {len(results)} latest papers for {search_query}")
-                    return raw_papers
-                except Exception as e:
-                    logger.warning(f"Fallback search failed: {e}")
+
 
         if self.config.executor.debug:
             all_paper_ids = all_paper_ids[:10]
