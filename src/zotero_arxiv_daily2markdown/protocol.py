@@ -24,7 +24,15 @@ class Paper:
 
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')
-        prompt = f"Given the following information of a paper, generate a TLDR summary in {lang}:\n\n。其字数应该200-400字，描述了文章所使用的方法、得到的结论；请你尊重原始论文，如字数不够，可以减少字数，但不应出现文中没有的内容。你需要直接回答TLDR的正文部分，无需写标题、也无需介绍文章的名字。"
+        prompt = (
+            f"Given the following information about a scientific paper, write a concise summary in {lang}.\n\n"
+            "Requirements:\n"
+            "- Output exactly one paragraph of plain body text.\n"
+            "- Do not include a title, label, bullet list, numbering, or prefixes such as TLDR, Summary, 总结, or 摘要.\n"
+            "- Focus on the paper's method, core findings, and conclusion.\n"
+            "- Stay faithful to the source material and do not add information not supported by the paper.\n"
+            "- Keep the summary roughly 200-400 Chinese characters when writing Chinese, or a comparable one-paragraph length in other languages.\n"
+        )
         if self.title:
             prompt += f"Title:\n {self.title}\n\n"
 
@@ -48,13 +56,18 @@ class Paper:
             messages=[
                 {
                     "role": "system",
-                    "content": f"You are an assistant who perfectly summarizes scientific paper, and gives the core idea of the paper to the user. Your answer should be in {lang}.",
+                    "content": (
+                        f"You are an assistant who summarizes scientific papers accurately in {lang}. "
+                        "Return exactly one paragraph of summary text with no heading, label, bullets, or extra commentary."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
             **llm_params.get('generation_kwargs', {})
         )
         tldr = response.choices[0].message.content
+        tldr = re.sub(r"^(?:\*\*)?(?:TLDR|Summary|总结|摘要)(?:\*\*)?\s*[:：]\s*", "", tldr.strip(), flags=re.IGNORECASE)
+        tldr = re.sub(r"\s+", " ", tldr).strip()
         return tldr
     
     def generate_tldr(self, openai_client:OpenAI,llm_params:dict) -> str:
@@ -72,18 +85,28 @@ class Paper:
         if not self.tldr:
             return "No summary available to translate."
         try:
-            prompt = f"Please translate the following Chinese summary of an academic paper into professional English. Only output the translated English text:\n\n{self.tldr}"
+            prompt = (
+                "Please translate the following Chinese summary of an academic paper into professional English.\n"
+                "Return exactly one paragraph of body text only, with no title, label, bullets, or extra commentary.\n\n"
+                f"{self.tldr}"
+            )
             response = openai_client.chat.completions.create(
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a professional translator for academic papers. Please directly output the translated English text without any additional comments.",
+                        "content": "You are a professional translator for academic papers. Return exactly one paragraph of translated body text without labels or additional comments.",
                     },
                     {"role": "user", "content": prompt},
                 ],
                 **llm_params.get('generation_kwargs', {})
             )
-            self.tldr_en = response.choices[0].message.content
+            self.tldr_en = re.sub(
+                r"^(?:\*\*)?(?:TLDR|Summary)(?:\*\*)?\s*[:：]\s*",
+                "",
+                response.choices[0].message.content.strip(),
+                flags=re.IGNORECASE,
+            )
+            self.tldr_en = re.sub(r"\s+", " ", self.tldr_en).strip()
             return self.tldr_en
         except Exception as e:
             logger.warning(f"Failed to translate tldr of {self.url}: {e}")

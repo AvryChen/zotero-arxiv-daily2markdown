@@ -4,6 +4,86 @@ from loguru import logger
 from omegaconf import DictConfig
 from .protocol import Paper
 import subprocess
+import re
+
+
+def _normalize_text(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _normalize_summary(text: str, lang: str) -> str:
+    text = text.strip()
+    prefixes = ["TLDR", "Summary"]
+    if lang == "zh":
+        prefixes.extend(["总结", "摘要"])
+    pattern = r"^(?:\*\*)?(?:" + "|".join(prefixes) + r")(?:\*\*)?\s*[:：]\s*"
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return _normalize_text(text)
+
+
+def _render_post_markdown(
+    papers: list[Paper],
+    lang: str,
+    date_str: str,
+    post_date_time: str,
+    topic: str,
+    overview: str = "",
+) -> str:
+    is_zh = lang == "zh"
+    title = (
+        f"{topic} 领域 arXiv 论文日常推送 {date_str}"
+        if is_zh
+        else f"arXiv Daily: {topic} {date_str}"
+    )
+    overview_heading = "> **今日速览**：" if is_zh else "> **Daily Overview**:"
+    score_label = "关联度评分" if is_zh else "Relevance Score"
+    authors_label = "作者" if is_zh else "Authors"
+    aff_label = "机构" if is_zh else "Affiliations"
+    link_label = "链接" if is_zh else "Link"
+    summary_label = "总结" if is_zh else "Summary"
+    fallback_overview = (
+        f"本文按照与 {topic} 领域的相关度排序论文，摘要由 AI 自动生成，仅供参考。"
+        if is_zh
+        else f"This post sorts papers by relevance to {topic}. Summaries are AI-generated and may contain errors."
+    )
+
+    content = [
+        "---",
+        f'title: "{title}"',
+        f"date: {post_date_time}",
+        "tags: [arxiv, paper]",
+        "categories: [Daily]",
+        f"lang: {lang}",
+        "---",
+        "",
+        overview_heading,
+    ]
+
+    normalized_overview = _normalize_text(overview) or fallback_overview
+    if normalized_overview:
+        content.append(f"> {normalized_overview}")
+    content.append("")
+
+    for i, paper in enumerate(papers, 1):
+        score_str = f"`{paper.score:.4f}`" if paper.score is not None else "`N/A`"
+        summary = paper.tldr if is_zh else (paper.tldr_en if paper.tldr_en else paper.tldr)
+        summary = _normalize_summary(summary or "", lang)
+
+        content.append(f"## {i}. {paper.title}")
+        content.append(f"- **{score_label}**: {score_str}")
+        content.append(f"- **{authors_label}**: {', '.join(paper.authors)}")
+        if paper.affiliations:
+            content.append(f"- **{aff_label}**: {', '.join(paper.affiliations)}")
+        content.append(f"- **{link_label}**: [{paper.url}]({paper.url})")
+        content.append("")
+        content.append(f"**{summary_label}**: {summary}")
+        content.append("")
+        content.append("---")
+        content.append("")
+
+    return "\n".join(content).rstrip() + "\n"
 
 def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "", overview_en: str = ""):
     if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
@@ -27,9 +107,6 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
     prompt_cfg = config.get("prompt", {})
     topic = prompt_cfg.get("topic", "research")
     
-    title_zh = f"{topic} 领域 arXiv 论文日常推送 {date_str}"
-    title_en = f"arXiv Daily: {topic.capitalize()} {date_str}"
-    
     # Auto push to Github
     if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
         logger.info("Starting git operations for Hugo website...")
@@ -48,77 +125,11 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
         except Exception as e:
             logger.warning(f"Initial git pull failed: {e}. Proceeding anyway...")
 
-    # Generate Chinese Version
-    content_zh = [
-        "---",
-        f'title: "{title_zh}"',
-        f'date: {post_date_time}',
-        "tags: [arxiv, paper]",
-        "categories: [Daily]",
-        "lang: zh",
-        "---",
-        ""
-    ]
-    
-    if overview_zh:
-        formatted_overview_zh = "\n".join([f"> {line}" for line in overview_zh.split("\n")])
-        content_zh.append(f"> **今日速览**：\n{formatted_overview_zh}")
-    else:
-        content_zh.append(f"> **说明**：本文只是将相关领域的论文按照关联度评分排序，越靠前代表越与 {topic} 领域有关。摘要由 AI 自动生成，可能存在误差，仅供参考。")
-    content_zh.append("")
-    
-    for i, paper in enumerate(papers, 1):
-        score_str = f"{paper.score:.4f}" if paper.score is not None else "N/A"
-        content_zh.append(f"## {i}. {paper.title}")
-        content_zh.append(f"- **关联度评分**: `{score_str}`")
-        content_zh.append(f"- **作者**: {', '.join(paper.authors)}")
-        if paper.affiliations:
-            content_zh.append(f"- **机构**: {', '.join(paper.affiliations)}")
-        content_zh.append(f"- **链接**: [{paper.url}]({paper.url})")
-        content_zh.append("")
-        content_zh.append(f"**总结**: {paper.tldr}")
-        content_zh.append("")
-        content_zh.append("---")
-        content_zh.append("")
-        
     with open(filepath_zh, "w", encoding="utf-8") as f:
-        f.write("\n".join(content_zh))
-        
-    # Generate English Version
-    content_en = [
-        "---",
-        f'title: "{title_en}"',
-        f'date: {post_date_time}',
-        "tags: [arxiv, paper]",
-        "categories: [Daily]",
-        "lang: en",
-        "---",
-        ""
-    ]
-    
-    if overview_en:
-        formatted_overview_en = "\n".join([f"> {line}" for line in overview_en.split("\n")])
-        content_en.append(f"> **Daily Overview**:\n{formatted_overview_en}")
-    else:
-        content_en.append(f"> **Note**: This post sorts papers based on relevance to {topic}. Summaries are AI-generated and may contain errors.")
-    content_en.append("")
-    
-    for i, paper in enumerate(papers, 1):
-        score_str = f"{paper.score:.4f}" if paper.score is not None else "N/A"
-        content_en.append(f"## {i}. {paper.title}")
-        content_en.append(f"- **Relevance Score**: `{score_str}`")
-        content_en.append(f"- **Authors**: {', '.join(paper.authors)}")
-        if paper.affiliations:
-            content_en.append(f"- **Affiliations**: {', '.join(paper.affiliations)}")
-        content_en.append(f"- **Link**: [{paper.url}]({paper.url})")
-        content_en.append("")
-        content_en.append(f"**Summary**: {paper.tldr_en if paper.tldr_en else paper.tldr}")
-        content_en.append("")
-        content_en.append("---")
-        content_en.append("")
-        
+        f.write(_render_post_markdown(papers, "zh", date_str, post_date_time, topic, overview_zh))
+
     with open(filepath_en, "w", encoding="utf-8") as f:
-        f.write("\n".join(content_en))
+        f.write(_render_post_markdown(papers, "en", date_str, post_date_time, topic, overview_en))
         
     logger.info(f"Hugo markdown exported successfully to {filepath_zh} and {filepath_en}")
     
