@@ -4,6 +4,7 @@ from ..protocol import Paper
 from loguru import logger
 from typing import Any
 from time import sleep
+from datetime import datetime, timezone
 
 @register_retriever("biorxiv")
 class BiorxivRetriever(BaseRetriever):
@@ -50,6 +51,7 @@ class BiorxivRetriever(BaseRetriever):
         abstract = raw_paper['abstract']
         pdf_url = f"https://www.{self.server}.org/content/{raw_paper['doi']}v{raw_paper['version']}.full.pdf"
         full_text = None # biorxiv forbids scraping its pdf
+        published_at = datetime.strptime(raw_paper["date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
         return Paper(
             source=self.name,
             title=title,
@@ -57,5 +59,6 @@ class BiorxivRetriever(BaseRetriever):
             abstract=abstract,
             url=pdf_url,
             pdf_url=pdf_url,
-            full_text=full_text
+            full_text=full_text,
+            published_at=published_at,
         )

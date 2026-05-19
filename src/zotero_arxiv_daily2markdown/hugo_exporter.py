@@ -1,10 +1,12 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 from omegaconf import DictConfig
 from .protocol import Paper
 import subprocess
 import re
+
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _normalize_text(text: str) -> str:
@@ -21,6 +23,43 @@ def _normalize_summary(text: str, lang: str) -> str:
     pattern = r"^(?:\*\*)?(?:" + "|".join(prefixes) + r")(?:\*\*)?\s*[:：]\s*"
     text = re.sub(pattern, "", text, flags=re.IGNORECASE)
     return _normalize_text(text)
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_publication_window(papers: list[Paper], lang: str) -> str:
+    published_times = sorted(
+        dt
+        for dt in (_to_utc(paper.published_at) for paper in papers)
+        if dt is not None
+    )
+    if not published_times:
+        return (
+            "**本期论文投稿处理时间范围**：暂无可用时间（北京时间）。"
+            if lang == "zh"
+            else "**arXiv submission processing window**: times are unavailable (UTC)."
+        )
+
+    start = published_times[0]
+    end = published_times[-1]
+
+    if lang == "zh":
+        beijing_start = start.astimezone(BEIJING_TZ)
+        beijing_end = end.astimezone(BEIJING_TZ)
+        return (
+            "**本期论文投稿处理时间范围**："
+            f"{beijing_start:%Y-%m-%d %H:%M} 至 {beijing_end:%Y-%m-%d %H:%M}（北京时间）。"
+        )
+    return (
+        "**arXiv submission processing window**: "
+        f"{start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC."
+    )
 
 
 def _render_post_markdown(
@@ -64,6 +103,7 @@ def _render_post_markdown(
     normalized_overview = _normalize_text(overview) or fallback_overview
     if normalized_overview:
         content.append(f"> {normalized_overview}")
+    content.append(f"> {_format_publication_window(papers, lang)}")
     content.append("")
 
     for i, paper in enumerate(papers, 1):
