@@ -55,6 +55,12 @@ def test_tldr_truncates_long_prompt(llm_params):
     assert result is not None
 
 
+def test_ranking_text_can_use_english_tldr():
+    paper = make_sample_paper(title="Title", abstract="Abstract", tldr="中文", tldr_en="English")
+    result = paper.ranking_text(include_full_text=False, include_english_tldr=True)
+    assert result == "Title\n\nAbstract\n\nEnglish"
+
+
 # ---------------------------------------------------------------------------
 # generate_affiliations
 # ---------------------------------------------------------------------------

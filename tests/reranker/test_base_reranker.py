@@ -65,6 +65,56 @@ def test_rerank_single_candidate_single_corpus():
     assert ranked[0].score is not None
 
 
+def test_rerank_can_exclude_full_text():
+    corpus = make_sample_corpus(1)
+    papers = [make_sample_paper(title="P", abstract="ABSTRACT", full_text="FULL TEXT")]
+    captured = {}
+
+    class CapturingReranker(StubReranker):
+        def get_similarity_score(self, s1, s2):
+            captured["candidate_texts"] = s1
+            captured["corpus_texts"] = s2
+            return np.array([[0.5]])
+
+    reranker = CapturingReranker(np.array([[0.5]]))
+    reranker.rerank(papers, corpus, include_full_text=False)
+
+    assert captured["candidate_texts"] == ["P\n\nABSTRACT"]
+    assert captured["corpus_texts"] == [corpus[0].ranking_text()]
+
+
+def test_rerank_can_truncate_full_text():
+    corpus = make_sample_corpus(1)
+    papers = [make_sample_paper(title="P", abstract="ABSTRACT", full_text="FULL TEXT THAT IS LONG")]
+    captured = {}
+
+    class CapturingReranker(StubReranker):
+        def get_similarity_score(self, s1, s2):
+            captured["candidate_texts"] = s1
+            return np.array([[0.5]])
+
+    reranker = CapturingReranker(np.array([[0.5]]))
+    reranker.rerank(papers, corpus, include_full_text=True, max_full_text_chars=4)
+
+    assert captured["candidate_texts"] == ["P\n\nABSTRACT\n\nFULL"]
+
+
+def test_rerank_can_use_english_tldr():
+    corpus = make_sample_corpus(1)
+    papers = [make_sample_paper(title="P", abstract="ABSTRACT", tldr="中文总结", tldr_en="English TLDR")]
+    captured = {}
+
+    class CapturingReranker(StubReranker):
+        def get_similarity_score(self, s1, s2):
+            captured["candidate_texts"] = s1
+            return np.array([[0.5]])
+
+    reranker = CapturingReranker(np.array([[0.5]]))
+    reranker.rerank(papers, corpus, include_full_text=False, include_english_tldr=True)
+
+    assert captured["candidate_texts"] == ["P\n\nABSTRACT\n\nEnglish TLDR"]
+
+
 def test_get_reranker_cls_unknown():
     with pytest.raises(ValueError, match="not found"):
         get_reranker_cls("nonexistent_reranker_xyz")

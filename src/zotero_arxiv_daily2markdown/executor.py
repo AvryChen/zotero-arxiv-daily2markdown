@@ -12,6 +12,8 @@ from .utils import send_email
 from .hugo_exporter import export_to_hugo
 from openai import OpenAI
 from tqdm import tqdm
+import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -41,11 +43,56 @@ class Executor:
         config.executor.debug = to_bool(config.executor.get("debug", False))
         self.debug = config.executor.debug
 
+        unsupported_sources = [source for source in config.executor.source if source != "arxiv"]
+        if unsupported_sources:
+            raise ValueError(f"Only arxiv is supported as a paper source. Unsupported sources: {unsupported_sources}")
+
         self.retrievers = {
             source: get_retriever_cls(source)(config) for source in config.executor.source
         }
         self.reranker = get_reranker_cls(config.executor.reranker)(config)
         self.openai_client = OpenAI(api_key=config.llm.api.key, base_url=config.llm.api.base_url)
+
+    def _set_retriever_full_text_mode(self, enabled: bool) -> None:
+        for retriever in self.retrievers.values():
+            if hasattr(retriever, "fetch_full_text_during_retrieval"):
+                retriever.fetch_full_text_during_retrieval = enabled
+
+    def _enrich_selected_papers(self, papers):
+        for paper in tqdm(papers, desc="Fetching full text for shortlisted papers"):
+            retriever = self.retrievers.get(paper.source)
+            if retriever is not None and hasattr(retriever, "populate_full_text"):
+                retriever.populate_full_text(paper)
+        return papers
+
+    def _generate_longlist_summaries(self, papers) -> None:
+        llm_concurrency = int(self.config.executor.get("llm_concurrency", 3))
+        llm_concurrency = max(1, llm_concurrency)
+
+        def generate_for_paper(paper):
+            paper.generate_tldr(self.openai_client, self.config.llm)
+            paper.generate_english_tldr(self.openai_client, self.config.llm)
+
+        if llm_concurrency == 1 or len(papers) <= 1:
+            for paper in tqdm(papers, desc="Generating TLDRs for longlisted papers"):
+                generate_for_paper(paper)
+            return
+
+        with ThreadPoolExecutor(max_workers=min(llm_concurrency, len(papers))) as pool:
+            futures = [pool.submit(generate_for_paper, paper) for paper in papers]
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Generating TLDRs for longlisted papers",
+            ):
+                future.result()
+
+    def _resolve_longlist_size(self) -> int:
+        configured_longlist = self.config.executor.get("longlist")
+        max_paper_num = int(self.config.executor.max_paper_num)
+        if configured_longlist is None:
+            return max(max_paper_num, math.ceil(max_paper_num * 1.5))
+        return max(max_paper_num, int(configured_longlist))
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
@@ -105,6 +152,7 @@ class Executor:
             logger.error(f"No zotero papers found. Please check your zotero settings:\n{self.config.zotero}")
             return
         all_papers = []
+        self._set_retriever_full_text_mode(False)
         for source, retriever in self.retrievers.items():
             logger.info(f"Retrieving {source} papers...")
             papers = retriever.retrieve_papers()
@@ -116,14 +164,25 @@ class Executor:
         logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
         reranked_papers = []
         if len(all_papers) > 0:
-            logger.info("Reranking papers...")
-            reranked_papers = self.reranker.rerank(all_papers, corpus)
-            
-            # Filter by score threshold
+            logger.info("Reranking papers using title and abstract...")
+            reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
+            longlist_size = self._resolve_longlist_size()
+            reranked_papers = reranked_papers[:longlist_size]
+
+            if reranked_papers:
+                logger.info(f"Shortlisted {len(reranked_papers)} papers for the longlist. Fetching HTML/PDF and generating TLDRs for second-pass ranking...")
+                self._enrich_selected_papers(reranked_papers)
+                self._generate_longlist_summaries(reranked_papers)
+                logger.info("Reranking shortlisted papers using English TLDR...")
+                reranked_papers = self.reranker.rerank(
+                    reranked_papers,
+                    corpus,
+                    include_full_text=False,
+                    include_english_tldr=True,
+                )
+
             threshold = self.config.executor.get("score_threshold", 3.0)
             reranked_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
-            
-            # Limit to max_paper_num
             reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
             
             if len(reranked_papers) == 0:
@@ -133,7 +192,7 @@ class Executor:
             else:
                 logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
 
-            logger.info("Generating TLDR and affiliations...")
+            logger.info("Generating affiliations...")
             for p in tqdm(reranked_papers):
                 p.generate_tldr(self.openai_client, self.config.llm)
                 p.generate_english_tldr(self.openai_client, self.config.llm)

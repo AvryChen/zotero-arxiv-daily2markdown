@@ -2,6 +2,8 @@
 
 import feedparser
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
 
 
 @pytest.fixture()
@@ -13,7 +15,9 @@ def mock_feedparser(monkeypatch):
 
     Returns the parsed result so tests can assert against it.
     """
-    parsed = feedparser.parse("tests/retriever/arxiv_rss_example.xml")
+    fixture_path = Path("tests/retriever/arxiv_rss_example.xml")
+    fixture_bytes = fixture_path.read_bytes()
+    parsed = feedparser.parse(str(fixture_path))
     raw_parse = feedparser.parse
 
     def _patched(url_or_bytes, *args, **kwargs):
@@ -22,29 +26,22 @@ def mock_feedparser(monkeypatch):
             target = target.decode("utf-8", errors="ignore")
         if isinstance(target, str) and "rss.arxiv.org" in target:
             return parsed
+        if isinstance(target, str) and "updates on arXiv.org" in target:
+            return parsed
         return raw_parse(url_or_bytes, *args, **kwargs)
 
     monkeypatch.setattr(feedparser, "parse", _patched)
-    return parsed
 
+    def _patched_get(url, **kwargs):
+        if "rss.arxiv.org" in url:
+            return SimpleNamespace(
+                content=fixture_bytes,
+                text=fixture_bytes.decode("utf-8"),
+                raise_for_status=lambda: None,
+            )
+        raise AssertionError(f"Unexpected network call in RSS fixture: {url}")
 
-@pytest.fixture()
-def mock_biorxiv_api(monkeypatch):
-    """Patch requests.get to return the canned bioRxiv API response."""
     import requests
-    from types import SimpleNamespace
 
-    from tests.canned_responses import SAMPLE_BIORXIV_API_RESPONSE
-
-    original_get = requests.get
-
-    def _patched(url, **kwargs):
-        if "api.biorxiv.org" in url:
-            resp = SimpleNamespace()
-            resp.status_code = 200
-            resp.json = lambda: SAMPLE_BIORXIV_API_RESPONSE
-            resp.raise_for_status = lambda: None
-            return resp
-        return original_get(url, **kwargs)
-
-    monkeypatch.setattr(requests, "get", _patched)
+    monkeypatch.setattr(requests, "get", _patched_get)
+    return parsed

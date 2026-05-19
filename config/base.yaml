@@ -1,59 +1,62 @@
 zotero:
-  user_id: ??? # User ID of your Zotero account.
-  api_key: ??? # An Zotero API key with read access.
-  include_path: null # A list of glob patterns marking the Zotero collections that should be included. Example: ["2026/survey/**","2026/reading-group/**"]
-  ignore_path: null # A list of glob patterns marking the Zotero collections that should be excluded. Example: ["2026/ignore/**","archive/**"]
+  user_id: ??? # Zotero 账号的用户 ID。
+  api_key: ??? # 具有读取权限的 Zotero API Key。
+  include_path: null # 要纳入语料库的 Zotero 收藏夹路径 glob 规则列表。示例：["2026/survey/**","2026/reading-group/**"]
+  ignore_path: null # 要排除的 Zotero 收藏夹路径 glob 规则列表。示例：["2026/ignore/**","archive/**"]
 
 source:
   arxiv:
-    category: null # The categories of target arxiv papers. Find the abbr of your research area from [here](https://arxiv.org/category_taxonomy). Example: ["cs.AI","cs.CV","cs.LG","cs.CL"]
-    include_cross_list: false # Whether to include arXiv cross-list papers in subscribed categories. Example: true
-  biorxiv:
-    category: null # The categories of target biorxiv papers. Find categories from [here](https://www.biorxiv.org/). Example: ["biochemistry","animal behavior and cognition"]
-  medrxiv:
-    category: null # The categories of target medrxiv papers. Find categories from [here](https://www.medrxiv.org/) Example: ["psychiatry and clinical psychology", "neurology"]
+    category: null # 目标 arXiv 分类。可在 https://arxiv.org/category_taxonomy 查询领域缩写。示例：["cs.AI","cs.CV","cs.LG","cs.CL"]
+    include_cross_list: true # 是否包含订阅分类中的 arXiv 交叉列表论文。示例：true
 
 email:
-  sender: ??? # The email account of the SMTP server that sends you email. Example: abc@qq.com
-  receiver: ??? # The email account that receives the paper list. Example: abc@outlook.com
-  smtp_server: ??? # The SMTP server that sends the email. Ask your email provider (Gmail, QQ, Outlook, ...) for its SMTP server. Example: smtp.qq.com
-  smtp_port: ??? # The port of SMTP server. Example: 465
-  sender_password: ??? # The password of the sender account. Note that it's not necessarily the password for logging in the e-mail client, but the authentication code for SMTP service. Ask your email provider for this. Example: abcdefghijklmn
+  sender: ??? # 用于发送邮件的邮箱账号。示例：abc@qq.com
+  receiver: ??? # 接收论文列表的邮箱账号。示例：abc@outlook.com
+  smtp_server: ??? # 发件邮箱的 SMTP 服务器，可向邮箱服务商查询。示例：smtp.qq.com
+  smtp_port: ??? # SMTP 服务器端口。示例：465
+  sender_password: ??? # 发件邮箱的 SMTP 密码或授权码，通常不是邮箱登录密码。示例：abcdefghijklmn
 
 llm:
   api:
-    key: ??? # API Key of your LLM API. Example: sk-xxx
-    base_url: ??? # API URL of your LLM API. Example: https://api.openai.com/v1
+    key: ??? # 大模型 API Key。示例：sk-xxx
+    base_url: ??? # 大模型 API 地址。示例：https://api.openai.com/v1
   generation_kwargs:
-  # Arguments for the LLM API. See [here](https://platform.openai.com/docs/api-reference/chat/create) for more details.
-    max_tokens: 16384
+  # 传给大模型 Chat Completions 接口的参数，可参考 OpenAI API 文档。
+    max_tokens: 393216
     model: ???
-  language: English # Preferred language for the TL;DR. Example: English
+  language: English # TL;DR 摘要的首选语言。示例：English
 
 prompt:
-  topic: "nickelate superconductors" # The research topic for AI overview.
-  role: "专业的学术编辑" # The role of the AI in generation.
+  topic: "nickelate superconductors" # AI 生成每日概览时关注的研究主题。
+  role: "专业的学术编辑" # AI 生成内容时扮演的角色。
   overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可"
   translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
 
 reranker:
   local:
-    model: jinaai/jina-embeddings-v5-text-nano # The Hugging Face model name of the local embedding model. Example: jinaai/jina-embeddings-v5-text-nano
+    model: jinaai/jina-embeddings-v5-text-nano # 本地 embedding 模型的 Hugging Face 名称。示例：jinaai/jina-embeddings-v5-text-nano
     encode_kwargs:
-    # The kwargs for the encode method of the local embedding model. Details see [here](https://www.sbert.net/docs/package_reference/SentenceTransformer.html#sentence_transformers.SentenceTransformer.encode)
+    # 传给本地 embedding 模型 encode 方法的参数，可参考 SentenceTransformers 文档。
       task: retrieval
       prompt_name: document
   api:
-    key: null # API Key of your embedding model API. Example: sk-xxx
-    base_url: null # API URL of your embedding model API. Example: https://api.openai.com/v1
-    model: null # The model name of the embedding model. Example: text-embedding-3-large
-    batch_size: null # The batch size for embedding API requests. Adjust to match your provider's limit. Example: 64
+    key: null # embedding 模型 API Key。示例：sk-xxx
+    base_url: null # embedding 模型 API 地址。示例：https://api.openai.com/v1
+    model: null # embedding 模型名称。示例：text-embedding-3-large
+    batch_size: null # embedding API 请求批大小，请按服务商限制调整。示例：64
 
 executor:
-  debug: false # Whether to use debug mode. Example: true
-  send_empty: false # Whether to send an empty email even if no new papers today. Example: true
-  max_paper_num: 20 # The maximum number of the papers presented in the email. Example: 100
-  score_threshold: 3.0 # The minimum relevance score for a paper to be included. Example: 3.0
-  source: ??? # The sources of papers to retrieve. Example: ['arxiv','biorxiv','medrxiv']
-  reranker: local # The reranker to use. Example: 'local' or 'api'
-  target_date: null # The target date to fetch papers for (YYYY-MM-DD). If null, fetches the latest. Example: "2026-05-01"
+  debug: true # 是否启用调试模式。示例：true
+  send_empty: true # 当当天没有新论文时，是否仍发送空邮件。示例：true
+  max_paper_num: 20 # 邮件和页面中展示的最大论文数量。示例：100
+  longlist: null # 第二轮抓取全文和精排的候选数量；为 null 时默认取 max_paper_num 的 1.5 倍并向上取整。
+  llm_concurrency: 5 # longlist 阶段生成双语 TL;DR 时的并发数；设为 1 表示顺序执行。
+  score_threshold: 3.0 # 论文入选的最低相关度分数。示例：3.0
+  source: ??? # 要抓取的论文来源，目前仅支持 ['arxiv']。
+  reranker: local # 使用的重排序器。示例：'local' 或 'api'
+  target_date: null # 要抓取的目标日期，格式为 YYYY-MM-DD；为 null 时抓取最新论文。示例："2026-05-01"
+  fetch_strict: true # arXiv 抓取完整性校验发现缺页或缺 ID 时，是否直接失败。
+  cross_validate_dailyarxiv: false # 是否用 dailyarxiv.com 的 query.php 对指定日期的 arXiv 结果做交叉验证。
+  cross_validation_mode: warn # dailyarxiv 交叉验证不一致时的处理方式。示例：'warn' 或 'fail'
+  arxiv_page_size: 800 # 指定日期抓取时 arXiv API 每页请求数量。
+  arxiv_metadata_batch_size: 20 # 从 RSS 获取 ID 后，批量查询 arXiv 元数据时的批大小。

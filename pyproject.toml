@@ -37,9 +37,10 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.pytest.ini_options]
-addopts = "-m 'not slow'"
+addopts = "-m 'not slow and not live_arxiv'"
 markers = [
     "slow: tests that are slow (e.g. download models)",
+    "live_arxiv: optional tests that query live arXiv and dailyarxiv endpoints",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:multiprocessing",

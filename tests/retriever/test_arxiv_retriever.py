@@ -19,20 +19,20 @@ def _raise_runtime_error() -> None:
 
 
 def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
-    monkeypatch.setattr("zotero_arxiv_daily2markdown.retriever.base.sleep", lambda _: None)
 
     # The RSS fixture gives us paper IDs.  After feedparser, the code calls
     # arxiv.Client().results(search) which makes real HTTP requests.  We mock
     # the arxiv Client so the test stays offline.
-    new_entries = [
+    include_cross_list = config.source.arxiv.get("include_cross_list", False)
+    allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
+    matched_entries = [
         e for e in mock_feedparser.entries
-        if e.get("arxiv_announce_type", "new") == "new"
+        if e.get("arxiv_announce_type", "new") in allowed_announce_types
     ]
-    paper_ids = [e.id.removeprefix("oai:arXiv.org:") for e in new_entries]
 
     # Build fake ArxivResult-like objects matching each RSS entry
     fake_results = []
-    for entry in new_entries:
+    for entry in matched_entries:
         pid = entry.id.removeprefix("oai:arXiv.org:")
         fake_results.append(SimpleNamespace(
             title=entry.title,
@@ -47,7 +47,12 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
         def __init__(self, **kw):
             pass
         def results(self, search):
-            return iter(fake_results)
+            requested = set(search.id_list)
+            return iter(
+                result
+                for result in fake_results
+                if result.entry_id.removeprefix("https://arxiv.org/abs/") in requested
+            )
 
     monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
 
@@ -59,8 +64,29 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
     retriever = ArxivRetriever(config)
     papers = retriever.retrieve_papers()
 
-    assert len(papers) == len(new_entries)
-    assert set(p.title for p in papers) == set(e.title for e in new_entries)
+    assert len(papers) == len(matched_entries)
+    assert set(p.title for p in papers) == set(e.title for e in matched_entries)
+
+
+def test_arxiv_convert_to_paper_skips_full_text_when_disabled(config, monkeypatch):
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_html", lambda paper: (_ for _ in ()).throw(AssertionError("should not fetch html")))
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_pdf", lambda paper: (_ for _ in ()).throw(AssertionError("should not fetch pdf")))
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_tar", lambda paper: (_ for _ in ()).throw(AssertionError("should not fetch tar")))
+
+    retriever = ArxivRetriever(config)
+    retriever.fetch_full_text_during_retrieval = False
+    raw_paper = SimpleNamespace(
+        title="Paper",
+        authors=[SimpleNamespace(name="Author")],
+        summary="Abstract",
+        pdf_url="https://arxiv.org/pdf/2501.00001v1",
+        entry_id="https://arxiv.org/abs/2501.00001v1",
+        source_url=lambda: "https://arxiv.org/e-print/2501.00001v1",
+    )
+
+    paper = retriever.convert_to_paper(raw_paper)
+
+    assert paper.full_text is None
 
 
 def test_run_with_hard_timeout_returns_value():

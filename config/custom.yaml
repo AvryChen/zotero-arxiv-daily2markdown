@@ -1,7 +1,7 @@
 zotero:
   user_id: ${oc.env:ZOTERO_ID}
   api_key: ${oc.env:ZOTERO_KEY}
-  include_path: null # Or set a list of glob patterns, e.g. ["2026/survey/**","2026/reading-group/**"]
+  include_path: null # 也可以设置 glob 规则列表，例如：["2026/survey/**","2026/reading-group/**"]
 
 email:
   sender: ${oc.env:SENDER}
@@ -25,6 +25,11 @@ source:
 executor:
   debug: ${oc.env:DEBUG,null}
   source: ['arxiv']
+
+reranker:
+  local:
+    encode_kwargs:
+      batch_size: 4
 
 hugo:
   output_dir: ${oc.env:HUGO_OUTPUT_DIR,null}

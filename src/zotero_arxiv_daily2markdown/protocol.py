@@ -23,6 +23,25 @@ class Paper:
     score: Optional[float] = None
     published_at: Optional[datetime] = None
 
+    def ranking_text(
+        self,
+        include_full_text: bool = True,
+        include_tldr: bool = False,
+        include_english_tldr: bool = False,
+        max_full_text_chars: int | None = None,
+    ) -> str:
+        parts = [self.title.strip(), self.abstract.strip()]
+        if include_tldr and self.tldr:
+            parts.append(self.tldr.strip())
+        if include_english_tldr and self.tldr_en:
+            parts.append(self.tldr_en.strip())
+        if include_full_text and self.full_text:
+            full_text = self.full_text.strip()
+            if max_full_text_chars is not None and max_full_text_chars > 0:
+                full_text = full_text[:max_full_text_chars]
+            parts.append(full_text)
+        return "\n\n".join(part for part in parts if part)
+
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')
         prompt = (
@@ -72,6 +91,8 @@ class Paper:
         return tldr
     
     def generate_tldr(self, openai_client:OpenAI,llm_params:dict) -> str:
+        if self.tldr:
+            return self.tldr
         try:
             tldr = self._generate_tldr_with_llm(openai_client,llm_params)
             self.tldr = tldr
@@ -83,6 +104,8 @@ class Paper:
             return tldr
 
     def generate_english_tldr(self, openai_client: OpenAI, llm_params: dict) -> str:
+        if self.tldr_en:
+            return self.tldr_en
         if not self.tldr:
             return "No summary available to translate."
         try:
@@ -142,6 +165,8 @@ class Paper:
             return affiliations
     
     def generate_affiliations(self, openai_client:OpenAI,llm_params:dict) -> Optional[list[str]]:
+        if self.affiliations is not None:
+            return self.affiliations
         try:
             affiliations = self._generate_affiliations_with_llm(openai_client,llm_params)
             self.affiliations = affiliations
@@ -156,3 +181,6 @@ class CorpusPaper:
     abstract: str
     added_date: datetime
     paths: list[str]
+
+    def ranking_text(self) -> str:
+        return "\n\n".join(part for part in (self.title.strip(), self.abstract.strip()) if part)

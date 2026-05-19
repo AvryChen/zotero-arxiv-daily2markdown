@@ -17,8 +17,8 @@
 -   **Bilingual TL;DR / 双语摘要**: Automatically generates Chinese and English summaries for each paper. / 自动为每篇论文生成中英文双语 TL;DR。
 -   **Hugo Export / Hugo 自动化集成**: Direct export to Hugo-compatible Markdown files with dual-language support (`zh/en`). / 直接导出适配 Hugo 的 Markdown 文件，支持双语目录架构。
 -   **Smart Reranking / 智能排序**: Scores papers based on relevance to your local Zotero corpus using embedding models. / 使用 Embedding 模型根据与您 Zotero 本地库的关联度对论文进行打分排序。
+-   **arXiv Fetch Integrity / arXiv 抓取完整性校验**: Audits expected vs fetched paper counts, metadata ID coverage, and optional dailyarxiv cross-validation. / 校验应抓数量、实际抓取数量、元数据 ID 覆盖，并支持 dailyarxiv 交叉验证。
 -   **Robust Text Extraction / 稳健的文本提取**: Supports HTML (Trafilatura), PDF (PyMuPDF4LLM), and TeX source parsing with hard-timeout protection. / 支持 HTML、PDF 及 TeX 源码解析，具备多进程硬超时保护。
--   **Advanced Rate Limiting / 完善的频率限制**: Specialized logic to handle arXiv's strict API rate limits (HTTP 429). / 专门优化的 arXiv API 抓取逻辑，规避流量限制。
 
 ---
 
@@ -54,6 +54,11 @@ uv run python src/zotero_arxiv_daily2markdown/main.py
 Run for a specific date: / 抓取指定日期的论文：
 ```bash
 uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
+```
+
+Enable optional dailyarxiv cross-validation: / 启用可选 dailyarxiv 交叉验证：
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01" executor.cross_validate_dailyarxiv=true
 ```
 
 ---

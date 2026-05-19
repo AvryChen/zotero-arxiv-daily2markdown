@@ -17,11 +17,14 @@
     *   直接导出适配 Hugo 博客架构的 Markdown 文件。
     *   支持双语内容存放（`zh/posts/` 和 `en/posts/`）。
     *   包含完整的 Front Matter（标题、日期、标签、评分等）。
-3.  **更强大的文本抓取引擎**：
+3.  **更可靠的 arXiv 抓取校验**：
+    *   对 arXiv API 的 `totalResults`、分页结果数量和元数据 ID 覆盖做完整性审计。
+    *   可选接入 dailyarxiv 交叉验证，用于发现日期窗口或抓取数量异常。
+4.  **更强大的文本抓取引擎**：
     *   **三级降级提取**：HTML -> PDF (PyMuPDF4LLM) -> TeX 源码。
     *   **硬超时保护**：使用多进程隔离提取任务，防止复杂 PDF 导致程序挂起。
-    *   **频率限制优化**：针对 arXiv API 的 HTTP 429 限制，增加了随机延迟和自动重试逻辑。
-4.  **配置通用化**：
+    *   **频率限制优化**：针对 arXiv API 的 HTTP 429 限制，使用失败重试与退避逻辑。
+5.  **配置通用化**：
     *   支持在配置文件中自定义研究领域（Topic）和 AI 提示词（Prompt）。
     *   自动处理环境变量中的布尔值解析。
 
@@ -47,6 +50,9 @@ uv run python src/zotero_arxiv_daily2markdown/main.py
 
 # 抓取特定日期的论文
 uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
+
+# 抓取特定日期并启用 dailyarxiv 交叉验证
+uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01" executor.cross_validate_dailyarxiv=true
 ```
 
 ---

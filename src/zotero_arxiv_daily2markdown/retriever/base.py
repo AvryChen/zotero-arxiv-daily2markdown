@@ -3,7 +3,6 @@ from omegaconf import DictConfig
 from ..protocol import Paper, RawPaperItem
 from tqdm import tqdm
 from typing import Type
-from time import sleep
 from loguru import logger
 
 
@@ -33,7 +32,6 @@ class BaseRetriever(ABC):
                 continue
             if paper is not None:
                 papers.append(paper)
-            sleep(1)
         return papers
 
 registered_retrievers = {}
