@@ -1,89 +1,272 @@
-# Zotero-ArXiv-Daily2Markdown
+# Zotero arXiv Daily to Markdown
 
-[English](./README.md) | [中文](./README_zh.md)
+[Chinese documentation](./README_zh.md)
 
-> **A powerful, bilingual arXiv summarization tool that integrates Zotero and exports directly to Hugo.**
-> **一个强大的双语 arXiv 论文总结工具，集成 Zotero 并直接导出为 Hugo 博客格式。**
+Zotero arXiv Daily to Markdown watches new arXiv papers, compares them with your own Zotero library, summarizes the most relevant papers with an OpenAI-compatible LLM, and publishes the result as email and Hugo-ready Markdown.
 
----
+This project is a customized fork of [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily). The main additions are Zotero collection filtering, stronger arXiv fetch integrity checks, two-pass reranking, bilingual Hugo export, date backfill, and optional automatic publishing to a Hugo site.
 
-## 🌟 Introduction / 简介
+## What It Does
 
-**Zotero-ArXiv-Daily2Markdown** is an enhanced version of the original [zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily). It is designed for researchers who want to keep track of the latest papers in their field, generate high-quality bilingual summaries using LLMs (like DeepSeek or GPT), and automatically publish them to a Hugo-based personal website.
+- Fetches papers from arXiv RSS feeds or from an explicit arXiv announcement date window.
+- Builds a relevance profile from your Zotero papers, using titles, abstracts, collection paths, and recency.
+- Reranks new papers with either a local SentenceTransformers model or an embedding API.
+- Fetches full text for shortlisted papers with HTML, PDF, then TeX source fallback.
+- Generates paper summaries, English translations, affiliations, and a daily overview through an OpenAI-compatible chat API.
+- Sends an HTML email digest.
+- Exports separate Hugo posts under `zh/posts/` and `en/posts/`.
+- Supports historical backfill across a date range, with optional skip-existing behavior.
 
-**Zotero-ArXiv-Daily2Markdown** 是基于 [zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily) 开发的增强版本。它专为科研人员设计，旨在跟踪特定领域的最新论文，利用大模型（如 DeepSeek 或 GPT）生成高质量的中英双语摘要，并自动发布到基于 Hugo 的个人网站上。
+## How The Pipeline Works
 
-### Key Features / 核心特性
--   **Bilingual TL;DR / 双语摘要**: Automatically generates Chinese and English summaries for each paper. / 自动为每篇论文生成中英文双语 TL;DR。
--   **Hugo Export / Hugo 自动化集成**: Direct export to Hugo-compatible Markdown files with dual-language support (`zh/en`). / 直接导出适配 Hugo 的 Markdown 文件，支持双语目录架构。
--   **Smart Reranking / 智能排序**: Scores papers based on relevance to your local Zotero corpus using embedding models. / 使用 Embedding 模型根据与您 Zotero 本地库的关联度对论文进行打分排序。
--   **arXiv Fetch Integrity / arXiv 抓取完整性校验**: Audits expected vs fetched paper counts, metadata ID coverage, and optional dailyarxiv cross-validation. / 校验应抓数量、实际抓取数量、元数据 ID 覆盖，并支持 dailyarxiv 交叉验证。
--   **Robust Text Extraction / 稳健的文本提取**: Supports HTML (Trafilatura), PDF (PyMuPDF4LLM), and TeX source parsing with hard-timeout protection. / 支持 HTML、PDF 及 TeX 源码解析，具备多进程硬超时保护。
+1. Load configuration from `config/default.yaml`, which merges `config/base.yaml` and `config/custom.yaml`.
+2. Read Zotero items of type `conferencePaper`, `journalArticle`, and `preprint`, ignoring items without abstracts.
+3. Optionally filter the Zotero corpus with `zotero.include_path` and `zotero.ignore_path` glob patterns.
+4. Retrieve arXiv papers from the configured categories.
+5. First-pass rerank with title and abstract.
+6. Build a longlist, fetch full text, generate summaries, and rerank again with the English TL;DR.
+7. Keep papers above `executor.score_threshold`, capped by `executor.max_paper_num`.
+8. Generate affiliations and a daily overview.
+9. Send email if enabled for the current run, then export Hugo Markdown if `hugo.output_dir` is set.
 
----
+## Requirements
 
-## 🚀 Quick Start / 快速开始
+- Python `>=3.13`
+- [uv](https://docs.astral.sh/uv/) for dependency management
+- A Zotero user ID and Zotero API key with library read access
+- An OpenAI-compatible chat completion API
+- SMTP credentials if you want email delivery
+- A Hugo site content directory if you want Markdown export
 
-### 1. Installation / 安装
-This project uses `uv` for lightning-fast dependency management. / 本项目使用 `uv` 进行依赖管理。
+The default local reranker downloads a Hugging Face model through `sentence-transformers`. If you prefer not to run local embeddings, use the API reranker instead.
+
+## Installation
 
 ```bash
-git clone https://github.com/your-username/zotero-arxiv-daily2markdown.git
+git clone https://github.com/AvryChen/zotero-arxiv-daily2markdown.git
 cd zotero-arxiv-daily2markdown
 uv sync
 ```
 
-### 2. Configuration / 配置
-Copy the example environment file and fill in your keys. / 复制环境变量模板并填写您的 Key。
+Create your environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-Key settings in `.env`:
--   `ZOTERO_ID` & `ZOTERO_KEY`: Your Zotero user ID and API key.
--   `OPENAI_API_KEY` & `OPENAI_API_BASE`: LLM provider (e.g., DeepSeek, OpenAI).
--   `HUGO_OUTPUT_DIR`: Path to your Hugo site's `content` folder.
+Fill in the values in `.env`:
 
-### 3. Usage / 使用
-Run for the latest papers: / 抓取最新论文：
+```dotenv
+ZOTERO_ID=your_zotero_id
+ZOTERO_KEY=your_zotero_api_key
+
+OPENAI_API_KEY=your_llm_api_key
+OPENAI_API_BASE=https://api.openai.com/v1
+MODEL=gpt-4o-mini
+
+SENDER=your_email@example.com
+RECEIVER=receiver_email@example.com
+SENDER_PASSWORD=your_smtp_password
+
+HUGO_OUTPUT_DIR=/path/to/your/hugo/content
+HUGO_AUTO_PUSH=false
+DEBUG=false
+```
+
+## Configuration
+
+Most project defaults live in `config/base.yaml`. Put your local overrides in `config/custom.yaml`; this file is loaded after the base config.
+
+Minimal example:
+
+```yaml
+zotero:
+  user_id: ${oc.env:ZOTERO_ID}
+  api_key: ${oc.env:ZOTERO_KEY}
+  include_path: null
+  ignore_path: null
+
+source:
+  arxiv:
+    category: ["cs.AI", "cs.CV", "cs.LG"]
+    include_cross_list: true
+
+executor:
+  source: ["arxiv"]
+  reranker: local
+  max_paper_num: 20
+  score_threshold: 3.0
+
+llm:
+  api:
+    key: ${oc.env:OPENAI_API_KEY}
+    base_url: ${oc.env:OPENAI_API_BASE}
+  generation_kwargs:
+    model: ${oc.env:MODEL}
+  language: Chinese
+
+hugo:
+  output_dir: ${oc.env:HUGO_OUTPUT_DIR,null}
+```
+
+Useful configuration fields:
+
+| Field | Purpose |
+| --- | --- |
+| `source.arxiv.category` | arXiv categories to watch, for example `["cs.AI", "cs.CV"]` or `["cond-mat"]`. |
+| `source.arxiv.include_cross_list` | Include cross-listed papers from RSS feeds. |
+| `zotero.include_path` | Only use Zotero papers whose collection path matches one of these glob patterns. |
+| `zotero.ignore_path` | Exclude Zotero papers whose collection path matches one of these glob patterns. |
+| `executor.reranker` | `local` for SentenceTransformers or `api` for embedding API reranking. |
+| `executor.longlist` | Number of candidates enriched with full text and LLM summaries before the second rerank. |
+| `executor.llm_concurrency` | Concurrent LLM requests for longlist summary generation. |
+| `executor.target_date` | Run a single arXiv announcement date in `YYYY-MM-DD` format. |
+| `executor.start_date`, `executor.end_date` | Run a historical date range, inclusive. |
+| `executor.historical_mode` | `export_only` or `email_and_export` for historical runs. |
+| `executor.skip_existing` | Skip a historical date when both Hugo language files already exist. |
+| `executor.fetch_strict` | Fail when arXiv fetch integrity checks detect missing pages or IDs. |
+| `executor.cross_validate_dailyarxiv` | Compare target-date arXiv results with dailyarxiv.com. |
+| `hugo.output_dir` | Hugo `content` directory, or any directory where `zh/posts` and `en/posts` should be written. |
+
+For API-based embedding reranking, configure:
+
+```yaml
+executor:
+  reranker: api
+
+reranker:
+  api:
+    key: ${oc.env:OPENAI_API_KEY}
+    base_url: ${oc.env:OPENAI_API_BASE}
+    model: text-embedding-3-large
+    batch_size: 64
+```
+
+## Running
+
+Run the default latest-paper workflow:
+
 ```bash
 uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
-Run for a specific date: / 抓取指定日期的论文：
+Run for one arXiv announcement date:
+
 ```bash
 uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
 ```
 
-Enable optional dailyarxiv cross-validation: / 启用可选 dailyarxiv 交叉验证：
+Backfill a date range and only export Hugo files:
+
 ```bash
-uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01" executor.cross_validate_dailyarxiv=true
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.start_date="2026-05-01" \
+  executor.end_date="2026-05-07"
 ```
 
----
+Backfill a date range and send email for each date:
 
-## 🛠 Customization / 自定义
-
-You can customize the AI's role and research topic in `config/base.yaml`:
-您可以在 `config/base.yaml` 中自定义 AI 的角色和研究主题：
-
-```yaml
-prompt:
-  topic: "your research field"
-  role: "professional academic editor"
-  overview_zh: "Custom Chinese prompt template..."
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.start_date="2026-05-01" \
+  executor.end_date="2026-05-07" \
+  executor.historical_mode=email_and_export
 ```
 
----
+Enable dailyarxiv cross-validation for a target date:
 
-## 📄 License / 开源协议
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.target_date="2026-05-01" \
+  executor.cross_validate_dailyarxiv=true
+```
 
-This project is licensed under the **AGPL-3.0 License**. It is a fork of the original project by [TideDra](https://github.com/TideDra/zotero-arxiv-daily).
+Hydra overrides can change any config value from the command line:
 
-本项目基于 **AGPL-3.0 协议** 开源。本项目是 [TideDra](https://github.com/TideDra/zotero-arxiv-daily) 原始项目的二次开发版本。
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  'source.arxiv.category=["cs.CL","cs.LG"]' \
+  executor.max_paper_num=10 \
+  executor.debug=true
+```
 
----
+## Output
 
-## 🙏 Acknowledgments / 致谢
-Thanks to the original author of `zotero-arxiv-daily` for the great foundation. / 感谢原作者提供的优秀基础架构。
+Email output is rendered as an HTML digest with title, authors, affiliations, relevance score, summary, and PDF link.
+
+When `hugo.output_dir` is set, the exporter writes:
+
+```text
+<hugo.output_dir>/
+  zh/posts/YYYY-MM-DD-arxiv-daily.md
+  en/posts/YYYY-MM-DD-arxiv-daily.md
+```
+
+Each post includes front matter, a daily overview, the arXiv submission processing window, relevance scores, author lists, affiliations, source links, and AI-generated summaries.
+
+If `hugo.auto_push` is true or `HUGO_AUTO_PUSH=true`, the exporter will run git operations in the Hugo repository: pull with rebase/autostash, add the generated files, commit, and push.
+
+## Automation
+
+Local scheduled runs can call one of the bundled scripts:
+
+```bash
+./run_daily.sh
+./run_ubuntu.sh
+```
+
+On Windows:
+
+```bat
+run_daily.bat
+```
+
+The repository also contains GitHub Actions workflows:
+
+- `.github/workflows/main.yml` runs the digest workflow manually with repository variables and secrets.
+- `.github/workflows/test.yml` runs a debug digest workflow manually.
+- `.github/workflows/ci.yml` runs the test suite on pushes and pull requests.
+- `.github/workflows/keep-alive.yml` periodically updates a keep-alive file for scheduled workflows.
+
+For the main workflow, configure secrets such as `ZOTERO_ID`, `ZOTERO_KEY`, `SENDER`, `RECEIVER`, `SENDER_PASSWORD`, `OPENAI_API_KEY`, and `OPENAI_API_BASE`. Configure `CUSTOM_CONFIG` as a repository variable containing the YAML content that should replace `config/custom.yaml` during the workflow.
+
+## Development
+
+Run the default test suite:
+
+```bash
+uv run pytest
+```
+
+Run all tests, including slow and live arXiv tests:
+
+```bash
+uv run pytest -m ""
+```
+
+The default pytest configuration excludes tests marked `slow` and `live_arxiv`.
+
+Project layout:
+
+```text
+src/zotero_arxiv_daily2markdown/
+  main.py                  Hydra entry point
+  executor.py              End-to-end orchestration
+  protocol.py              Paper and corpus data models
+  retriever/               arXiv retrieval and integrity checks
+  reranker/                Local and API embedding rerankers
+  construct_email.py       HTML email rendering
+  hugo_exporter.py         Hugo Markdown export
+  utils.py                 Email, TeX, PDF, and helper utilities
+
+config/
+  base.yaml                Documented defaults
+  custom.yaml              Local overrides
+  default.yaml             Hydra merge entry
+
+tests/                     Offline unit and integration tests
+```
+
+## License
+
+This project is licensed under AGPL-3.0. It is derived from [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily); please keep the original license terms and attribution in mind when redistributing modified versions.
