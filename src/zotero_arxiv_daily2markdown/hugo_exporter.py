@@ -25,9 +25,15 @@ def _normalize_summary(text: str, lang: str) -> str:
     return _normalize_text(text)
 
 
-def _to_utc(dt: datetime | None) -> datetime | None:
+def _to_utc(dt: datetime | str | None) -> datetime | None:
     if dt is None:
         return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            logger.warning(f"Could not parse arXiv published_at timestamp: {dt}")
+            return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)

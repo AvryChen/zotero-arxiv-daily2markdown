@@ -64,3 +64,25 @@ def test_render_post_markdown_includes_publication_window_en():
     assert "**arXiv submission processing window**" in markdown
     assert "2026-05-19 00:00 to 2026-05-19 04:00 UTC" in markdown
     assert "2026-05-19 08:00 to 2026-05-19 12:00 Beijing time" not in markdown
+
+
+def test_render_post_markdown_accepts_string_publication_times():
+    papers = [
+        make_sample_paper(
+            title="String Time Paper",
+            tldr="中文总结",
+            tldr_en="English summary",
+            score=4.0,
+            published_at="2026-05-19T00:00:00Z",
+        ),
+    ]
+
+    markdown = _render_post_markdown(
+        papers,
+        "en",
+        "2026-05-19",
+        "2026-05-19T20:00:00+08:00",
+        "nickelate superconductors",
+    )
+
+    assert "2026-05-19 00:00 to 2026-05-19 00:00 UTC" in markdown

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, Callable, TypeVar
@@ -66,7 +67,7 @@ class ArxivFetchReport:
 
     def summary(self) -> str:
         dailyarxiv_count = "n/a" if self.dailyarxiv_count is None else self.dailyarxiv_count
-        return (
+        parts = [
             "source=arxiv "
             f"mode={self.mode} "
             f"expected={self.expected_count} "
@@ -75,7 +76,14 @@ class ArxivFetchReport:
             f"missing={len(self.missing_ids) + len(self.cross_validation_missing_ids)} "
             f"extra={len(self.extra_ids) + len(self.cross_validation_extra_ids)} "
             f"duplicates={len(self.duplicate_ids)}"
-        )
+        ]
+        if self.failed_pages:
+            parts.append(f"failed_pages={self.failed_pages}")
+        if self.failed_batches:
+            parts.append(f"failed_batches={self.failed_batches}")
+        if self.warnings:
+            parts.append(f"warnings={self.warnings}")
+        return " ".join(parts)
 
 
 @dataclass
@@ -163,6 +171,37 @@ def category_to_dailyarxiv_term(category: str) -> str:
 
 def get_config_bool(config: Any, key: str, default: bool = False) -> bool:
     return to_bool(config.get(key, default))
+
+
+def _retry_after_seconds(response: Any, fallback_seconds: float) -> float:
+    retry_after = getattr(response, "headers", {}).get("Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError):
+                pass
+    return fallback_seconds
+
+
+def _status_code_from_error(exc: Exception, response: Any | None = None) -> int | None:
+    error_response = getattr(exc, "response", None)
+    return getattr(error_response, "status_code", None) or getattr(response, "status_code", None)
+
+
+def parse_arxiv_datetime(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning(f"Could not parse arXiv timestamp: {value}")
+        return None
 
 
 def _download_file(url: str, path: str) -> None:
@@ -374,8 +413,8 @@ class ArxivRetriever(BaseRetriever):
         report.expected_count = len(unique_ids)
 
         raw_papers = self._fetch_metadata_by_ids(unique_ids, report)
-        self._finalize_report(report)
         self.last_fetch_report = report
+        self._finalize_report(report)
         return raw_papers
 
     def _retrieve_by_target_date(self, target_date: str) -> list[RawArxivResult]:
@@ -388,8 +427,8 @@ class ArxivRetriever(BaseRetriever):
         if get_config_bool(self.config.executor, "cross_validate_dailyarxiv", False):
             self._cross_validate_with_dailyarxiv(target_date, raw_papers, report)
 
-        self._finalize_report(report)
         self.last_fetch_report = report
+        self._finalize_report(report)
         return raw_papers
 
     def _build_submitted_date_query(self, from_stamp: str, to_stamp: str) -> str:
@@ -433,19 +472,50 @@ class ArxivRetriever(BaseRetriever):
         return results
 
     def _fetch_arxiv_query_page(self, query: str, start: int, max_results: int) -> tuple[list[RawArxivResult], int]:
-        response = requests.get(
-            ARXIV_API_URL,
-            params={
-                "search_query": query,
-                "start": start,
-                "max_results": max_results,
-                "sortBy": "submittedDate",
-                "sortOrder": "descending",
-            },
-            timeout=FETCH_TIMEOUT,
-        )
-        response.raise_for_status()
-        return _parse_atom_feed(response.text)
+        retries = max(1, int(self.config.executor.get("arxiv_query_retries", 5)))
+        base_delay = float(self.config.executor.get("arxiv_retry_base_seconds", 10))
+        max_delay = float(self.config.executor.get("arxiv_retry_max_seconds", 120))
+        params = {
+            "search_query": query,
+            "start": start,
+            "max_results": max_results,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+
+        for attempt in range(1, retries + 1):
+            response = None
+            try:
+                response = requests.get(
+                    ARXIV_API_URL,
+                    params=params,
+                    timeout=FETCH_TIMEOUT,
+                )
+                response.raise_for_status()
+                return _parse_atom_feed(response.text)
+            except requests.HTTPError as exc:
+                status_code = _status_code_from_error(exc, response)
+                should_retry = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
+                if not should_retry or attempt >= retries:
+                    raise
+                fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                wait_seconds = _retry_after_seconds(response, fallback_delay)
+                logger.warning(
+                    f"arXiv API returned HTTP {status_code} for start={start}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
+            except requests.RequestException as exc:
+                if attempt >= retries:
+                    raise
+                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                logger.warning(
+                    f"arXiv API request failed for start={start}: {exc}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
+
+        raise ArxivFetchIntegrityError(f"Failed to fetch arXiv page start={start}")
 
     def _fetch_metadata_by_ids(self, ids: list[str], report: ArxivFetchReport) -> list[ArxivResult]:
         if not ids:
@@ -578,7 +648,7 @@ class ArxivRetriever(BaseRetriever):
             url=raw_paper.entry_id,
             pdf_url=pdf_url,
             full_text=None,
-            published_at=getattr(raw_paper, "published", None),
+            published_at=parse_arxiv_datetime(getattr(raw_paper, "published", None)),
         )
         if self.fetch_full_text_during_retrieval:
             self.populate_full_text(paper)

@@ -49,6 +49,21 @@ def _response(text: str):
     return SimpleNamespace(text=text, content=text.encode(), raise_for_status=lambda: None)
 
 
+def _http_error_response(status_code: int, *, headers: dict[str, str] | None = None):
+    response = SimpleNamespace(
+        text="",
+        content=b"",
+        status_code=status_code,
+        headers=headers or {},
+    )
+
+    def raise_for_status():
+        raise arxiv_retriever.requests.HTTPError(f"{status_code} Client Error", response=response)
+
+    response.raise_for_status = raise_for_status
+    return response
+
+
 def _cond_mat_retriever(config, *, strict=True, cross_validate=False, mode="warn") -> ArxivRetriever:
     with open_dict(config):
         config.source.arxiv.category = ["cond-mat"]
@@ -83,6 +98,65 @@ def test_target_date_empty_results_returns_empty_report(config, monkeypatch):
     assert retriever._retrieve_by_target_date("2026-05-12") == []
     assert retriever.last_fetch_report.expected_count == 0
     assert retriever.last_fetch_report.fetched_count == 0
+
+
+def test_target_date_fetch_failure_reports_failed_page(config, monkeypatch):
+    retriever = _cond_mat_retriever(config)
+
+    def fake_get(url, **kwargs):
+        raise OSError("network down")
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
+
+    with pytest.raises(ArxivFetchIntegrityError, match="failed_pages"):
+        retriever._retrieve_by_target_date("2026-05-12")
+
+    assert "network down" in retriever.last_fetch_report.summary()
+
+
+def test_target_date_retries_after_429(config, monkeypatch):
+    retriever = _cond_mat_retriever(config)
+    with open_dict(config):
+        config.executor.arxiv_query_retries = 2
+        config.executor.arxiv_retry_base_seconds = 0
+
+    responses = [
+        _http_error_response(429),
+        _response(_atom_feed(["2605.00001v1"], total=1)),
+    ]
+    sleeps = []
+
+    def fake_get(url, **kwargs):
+        assert url == ARXIV_API_URL
+        return responses.pop(0)
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    papers = retriever._retrieve_by_target_date("2026-05-12")
+
+    assert len(papers) == 1
+    assert sleeps == [0]
+    assert retriever.last_fetch_report.failed_pages == []
+
+
+def test_target_date_retry_uses_retry_after_header(config, monkeypatch):
+    retriever = _cond_mat_retriever(config)
+    with open_dict(config):
+        config.executor.arxiv_query_retries = 2
+        config.executor.arxiv_retry_base_seconds = 0
+
+    responses = [
+        _http_error_response(429, headers={"Retry-After": "7"}),
+        _response(_atom_feed([], total=0)),
+    ]
+    sleeps = []
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", lambda *args, **kwargs: responses.pop(0))
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert retriever._retrieve_by_target_date("2026-05-12") == []
+    assert sleeps == [7.0]
 
 
 def test_target_date_pagination_shortfall_fails_in_strict_mode(config, monkeypatch):

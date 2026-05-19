@@ -1,11 +1,13 @@
 from loguru import logger
 from pyzotero import zotero
 from omegaconf import DictConfig, ListConfig, OmegaConf
+import os
 from .utils import glob_match, to_bool
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
 import random
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from .reranker import get_reranker_cls
 from .construct_email import render_email
 from .utils import send_email
@@ -30,6 +32,33 @@ def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key:
         raise TypeError(f"config.zotero.{config_key} must contain only glob pattern strings.")
 
     return list(patterns)
+
+
+@dataclass
+class DailyRunResult:
+    target_date: str | None
+    retrieved_count: int = 0
+    selected_count: int = 0
+    exported: bool = False
+    emailed: bool = False
+    skipped: bool = False
+    error: str | None = None
+
+
+def parse_executor_date(value: str, config_key: str) -> date:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(f"config.executor.{config_key} must use YYYY-MM-DD format, got {value!r}") from exc
+
+
+def expand_date_range(start_date: str, end_date: str) -> list[str]:
+    start = parse_executor_date(start_date, "start_date")
+    end = parse_executor_date(end_date, "end_date")
+    if start > end:
+        raise ValueError("config.executor.start_date must be earlier than or equal to end_date")
+    days = (end - start).days
+    return [(start + timedelta(days=offset)).isoformat() for offset in range(days + 1)]
 
 
 class Executor:
@@ -94,6 +123,36 @@ class Executor:
             return max(max_paper_num, math.ceil(max_paper_num * 1.5))
         return max(max_paper_num, int(configured_longlist))
 
+    def _get_date_range(self) -> list[str] | None:
+        start_date = self.config.executor.get("start_date")
+        end_date = self.config.executor.get("end_date")
+        target_date = self.config.executor.get("target_date")
+        if target_date and (start_date or end_date):
+            raise ValueError("executor.target_date cannot be used together with executor.start_date/end_date")
+        if bool(start_date) != bool(end_date):
+            raise ValueError("executor.start_date and executor.end_date must be configured together")
+        if not start_date:
+            return None
+        return expand_date_range(str(start_date), str(end_date))
+
+    def _historical_send_email_enabled(self) -> bool:
+        mode = self.config.executor.get("historical_mode", "export_only")
+        if mode == "export_only":
+            return False
+        if mode == "email_and_export":
+            return True
+        raise ValueError("executor.historical_mode must be 'export_only' or 'email_and_export'")
+
+    def _hugo_outputs_exist(self, target_date: str) -> bool:
+        if not hasattr(self.config, "hugo") or not self.config.hugo.get("output_dir"):
+            return False
+        output_dir = self.config.hugo.output_dir
+        filename = f"{target_date}-arxiv-daily.md"
+        return all(
+            os.path.exists(os.path.join(output_dir, lang, "posts", filename))
+            for lang in ("zh", "en")
+        )
+
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
         zot = zotero.Zotero(self.config.zotero.user_id, 'user', self.config.zotero.api_key)
@@ -144,13 +203,9 @@ class Executor:
             logger.info(f"Selected {len(corpus)} zotero papers:\n{samples}\n...")
         return corpus
 
-    
-    def run(self):
-        corpus = self.fetch_zotero_corpus()
-        corpus = self.filter_corpus(corpus)
-        if len(corpus) == 0:
-            logger.error(f"No zotero papers found. Please check your zotero settings:\n{self.config.zotero}")
-            return
+    def _run_single_day(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
+        target_date = self.config.executor.get("target_date")
+        result = DailyRunResult(target_date=str(target_date) if target_date else None)
         all_papers = []
         self._set_retriever_full_text_mode(False)
         for source, retriever in self.retrievers.items():
@@ -162,6 +217,7 @@ class Executor:
             logger.info(f"Retrieved {len(papers)} {source} papers")
             all_papers.extend(papers)
         logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
+        result.retrieved_count = len(all_papers)
         reranked_papers = []
         if len(all_papers) > 0:
             logger.info("Reranking papers using title and abstract...")
@@ -188,7 +244,8 @@ class Executor:
             if len(reranked_papers) == 0:
                 logger.info(f"No papers met the score threshold of {threshold}.")
                 if not self.config.executor.send_empty:
-                    return
+                    result.skipped = True
+                    return result
             else:
                 logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
 
@@ -199,7 +256,10 @@ class Executor:
                 p.generate_affiliations(self.openai_client, self.config.llm)
         elif not self.config.executor.send_empty:
             logger.info("No new papers found. No email will be sent.")
-            return
+            result.skipped = True
+            return result
+
+        result.selected_count = len(reranked_papers)
             
         logger.info("Generating daily overview...")
         overview_zh = ""
@@ -242,8 +302,63 @@ class Executor:
             except Exception as e:
                 logger.error(f"Failed to generate overview: {e}")
 
-        logger.info("Sending email...")
-        email_content = render_email(reranked_papers)
-        send_email(self.config, email_content)
-        logger.info("Email sent successfully")
+        if send_email_enabled:
+            logger.info("Sending email...")
+            email_content = render_email(reranked_papers)
+            send_email(self.config, email_content)
+            result.emailed = True
+            logger.info("Email sent successfully")
+        else:
+            logger.info("Skipping email for this run.")
+
         export_to_hugo(reranked_papers, self.config, overview_zh, overview_en)
+        result.exported = True
+        return result
+
+    def _run_date_range(self, dates: list[str], corpus: list[CorpusPaper]) -> list[DailyRunResult]:
+        send_email_enabled = self._historical_send_email_enabled()
+        continue_on_error = to_bool(self.config.executor.get("continue_on_error", False))
+        skip_existing = to_bool(self.config.executor.get("skip_existing", False))
+        original_target_date = self.config.executor.get("target_date")
+        results = []
+
+        try:
+            for target_date in dates:
+                logger.info(f"Running historical arXiv daily for {target_date}")
+                self.config.executor.target_date = target_date
+                if skip_existing and self._hugo_outputs_exist(target_date):
+                    logger.info(f"Skipping {target_date}: Hugo output already exists.")
+                    results.append(DailyRunResult(target_date=target_date, skipped=True))
+                    continue
+                try:
+                    results.append(self._run_single_day(corpus, send_email_enabled=send_email_enabled))
+                except Exception as exc:
+                    logger.exception(f"Failed to run arXiv daily for {target_date}")
+                    results.append(DailyRunResult(target_date=target_date, skipped=True, error=str(exc)))
+                    if not continue_on_error:
+                        raise
+        finally:
+            self.config.executor.target_date = original_target_date
+
+        succeeded = sum(1 for result in results if result.error is None and not result.skipped)
+        skipped = sum(1 for result in results if result.skipped)
+        failed = sum(1 for result in results if result.error is not None)
+        logger.info(
+            f"Historical arXiv daily finished: dates={len(results)}, "
+            f"succeeded={succeeded}, skipped={skipped}, failed={failed}"
+        )
+        return results
+
+    def run(self):
+        dates = self._get_date_range()
+        corpus = self.fetch_zotero_corpus()
+        corpus = self.filter_corpus(corpus)
+        if len(corpus) == 0:
+            logger.error(f"No zotero papers found. Please check your zotero settings:\n{self.config.zotero}")
+            return
+
+        if dates is not None:
+            logger.info(f"Running historical arXiv daily from {dates[0]} to {dates[-1]}")
+            return self._run_date_range(dates, corpus)
+
+        return self._run_single_day(corpus, send_email_enabled=True)

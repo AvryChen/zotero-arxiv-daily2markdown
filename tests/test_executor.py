@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily2markdown.executor import Executor, normalize_path_patterns
+from zotero_arxiv_daily2markdown.executor import Executor, expand_date_range, normalize_path_patterns
 from zotero_arxiv_daily2markdown.protocol import CorpusPaper
 
 
@@ -152,6 +152,48 @@ def test_executor_rejects_non_arxiv_sources(config):
 
     with pytest.raises(ValueError, match="Only arxiv is supported"):
         Executor(config)
+
+
+def test_expand_date_range_includes_both_endpoints():
+    assert expand_date_range("2026-05-01", "2026-05-03") == [
+        "2026-05-01",
+        "2026-05-02",
+        "2026-05-03",
+    ]
+
+
+def test_expand_date_range_rejects_reverse_range():
+    with pytest.raises(ValueError, match="start_date"):
+        expand_date_range("2026-05-03", "2026-05-01")
+
+
+def test_executor_rejects_target_date_with_date_range(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.target_date = "2026-05-01"
+        config.executor.start_date = "2026-05-01"
+        config.executor.end_date = "2026-05-03"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+
+    with pytest.raises(ValueError, match="target_date"):
+        executor._get_date_range()
+
+
+def test_executor_rejects_partial_date_range(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.start_date = "2026-05-01"
+        config.executor.end_date = None
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+
+    with pytest.raises(ValueError, match="configured together"):
+        executor._get_date_range()
 
 
 # ---------------------------------------------------------------------------
@@ -474,3 +516,77 @@ def test_generate_longlist_summaries_uses_configured_concurrency(config, monkeyp
 
     assert captured["max_workers"] == 3
     assert captured["submitted"] == 3
+
+
+def test_run_date_range_runs_each_day_without_email_by_default(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.start_date = "2026-05-01"
+        config.executor.end_date = "2026-05-03"
+        config.executor.historical_mode = "export_only"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    calls = []
+
+    def run_single_day(corpus, *, send_email_enabled=True):
+        calls.append((config.executor.target_date, send_email_enabled, list(corpus)))
+        return SimpleNamespace(
+            target_date=config.executor.target_date,
+            skipped=False,
+            error=None,
+        )
+
+    executor._run_single_day = run_single_day
+    corpus = [CorpusPaper(title="C", abstract="A", added_date=datetime(2026, 1, 1), paths=[])]
+
+    results = executor._run_date_range(["2026-05-01", "2026-05-02", "2026-05-03"], corpus)
+
+    assert [call[0] for call in calls] == ["2026-05-01", "2026-05-02", "2026-05-03"]
+    assert [call[1] for call in calls] == [False, False, False]
+    assert [result.target_date for result in results] == ["2026-05-01", "2026-05-02", "2026-05-03"]
+    assert config.executor.target_date is None
+
+
+def test_run_date_range_can_send_email(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.historical_mode = "email_and_export"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    send_flags = []
+
+    def run_single_day(corpus, *, send_email_enabled=True):
+        send_flags.append(send_email_enabled)
+        return SimpleNamespace(target_date=config.executor.target_date, skipped=False, error=None)
+
+    executor._run_single_day = run_single_day
+    executor._run_date_range(["2026-05-01"], [])
+
+    assert send_flags == [True]
+
+
+def test_run_date_range_skips_existing_hugo_outputs(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.skip_existing = True
+        config.executor.historical_mode = "export_only"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._hugo_outputs_exist = lambda target_date: target_date == "2026-05-02"
+    calls = []
+
+    def run_single_day(corpus, *, send_email_enabled=True):
+        calls.append(config.executor.target_date)
+        return SimpleNamespace(target_date=config.executor.target_date, skipped=False, error=None)
+
+    executor._run_single_day = run_single_day
+    results = executor._run_date_range(["2026-05-01", "2026-05-02", "2026-05-03"], [])
+
+    assert calls == ["2026-05-01", "2026-05-03"]
+    assert [result.skipped for result in results] == [False, True, False]

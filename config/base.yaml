@@ -29,7 +29,7 @@ llm:
 prompt:
   topic: "nickelate superconductors" # AI 生成每日概览时关注的研究主题。
   role: "专业的学术编辑" # AI 生成内容时扮演的角色。
-  overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可"
+  overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可。语言要求简洁、专业，以一整段话输出，不要分段、不要做自我介绍和项目介绍。例如： 好的，根据您提供的论文列表，今天的每日速览中，确实有直接关于 nickelate superconductors 领域的研究。同时，也有几篇虽然不直接以镍酸盐为研究对象，但其探讨的物理机制或研究方法与镍基超导领域当前的核心问题高度相关，值得重点关注。 以下是为今日推文准备的整体介绍： — 各位读者好，欢迎阅读今日的镍基超导领域论文速览。 今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。在[1]中，一项基于DFT+D……只要从“今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。”开始输出即可。"
   translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
 
 reranker:
@@ -55,8 +55,16 @@ executor:
   source: ??? # 要抓取的论文来源，目前仅支持 ['arxiv']。
   reranker: local # 使用的重排序器。示例：'local' 或 'api'
   target_date: null # 要抓取的目标日期，格式为 YYYY-MM-DD；为 null 时抓取最新论文。示例："2026-05-01"
+  start_date: null # 批量回溯的开始日期，格式为 YYYY-MM-DD；需要和 end_date 一起使用。
+  end_date: null # 批量回溯的结束日期，格式为 YYYY-MM-DD；区间包含开始和结束两天。
+  historical_mode: export_only # 批量回溯时的输出模式。export_only 只导出 Hugo；email_and_export 会同时发送邮件。
+  continue_on_error: false # 批量回溯中某一天失败时，是否继续处理后续日期。
+  skip_existing: false # 批量回溯时，如果中英文 Hugo 文件都已存在，是否跳过该日期。
   fetch_strict: true # arXiv 抓取完整性校验发现缺页或缺 ID 时，是否直接失败。
   cross_validate_dailyarxiv: false # 是否用 dailyarxiv.com 的 query.php 对指定日期的 arXiv 结果做交叉验证。
   cross_validation_mode: warn # dailyarxiv 交叉验证不一致时的处理方式。示例：'warn' 或 'fail'
   arxiv_page_size: 800 # 指定日期抓取时 arXiv API 每页请求数量。
+  arxiv_query_retries: 5 # 指定日期抓取时，arXiv API 分页请求遇到 429 或 5xx 时的最大尝试次数。
+  arxiv_retry_base_seconds: 10 # arXiv API 分页请求重试的基础等待秒数，会按指数退避增长。
+  arxiv_retry_max_seconds: 120 # arXiv API 分页请求单次重试等待的最大秒数。
   arxiv_metadata_batch_size: 20 # 从 RSS 获取 ID 后，批量查询 arXiv 元数据时的批大小。
