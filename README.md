@@ -124,8 +124,11 @@ Useful configuration fields:
 | `executor.start_date`, `executor.end_date` | Run a historical date range, inclusive. |
 | `executor.historical_mode` | `export_only` or `email_and_export` for historical runs. |
 | `executor.skip_existing` | Skip a historical date when both Hugo language files already exist. |
+| `executor.continue_on_error` | Continue a historical run after one date fails. |
 | `executor.fetch_strict` | Fail when arXiv fetch integrity checks detect missing pages or IDs. |
 | `executor.cross_validate_dailyarxiv` | Compare target-date arXiv results with dailyarxiv.com. |
+| `executor.arxiv_request_interval_seconds` | Minimum spacing between arXiv API requests. |
+| `executor.arxiv_429_cooldown_seconds` | Extra cooldown before retrying after repeated arXiv 429 responses. |
 | `hugo.output_dir` | Hugo `content` directory, or any directory where `zh/posts` and `en/posts` should be written. |
 
 For API-based embedding reranking, configure:

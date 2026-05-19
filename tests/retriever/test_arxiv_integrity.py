@@ -70,6 +70,8 @@ def _cond_mat_retriever(config, *, strict=True, cross_validate=False, mode="warn
         config.executor.fetch_strict = strict
         config.executor.cross_validate_dailyarxiv = cross_validate
         config.executor.cross_validation_mode = mode
+        config.executor.arxiv_request_interval_seconds = 0
+        config.executor.arxiv_429_cooldown_retries = 0
     return ArxivRetriever(config)
 
 
@@ -157,6 +159,56 @@ def test_target_date_retry_uses_retry_after_header(config, monkeypatch):
 
     assert retriever._retrieve_by_target_date("2026-05-12") == []
     assert sleeps == [7.0]
+
+
+def test_target_date_throttles_arxiv_api_pages(config, monkeypatch):
+    retriever = _cond_mat_retriever(config)
+    with open_dict(config):
+        config.executor.arxiv_page_size = 1
+        config.executor.arxiv_request_interval_seconds = 3
+
+    def fake_get(url, **kwargs):
+        assert url == ARXIV_API_URL
+        start = kwargs["params"]["start"]
+        if start == 0:
+            return _response(_atom_feed(["2605.00001v1"], total=2))
+        return _response(_atom_feed(["2605.00002v1"], total=2))
+
+    sleeps = []
+    monotonic_values = [100.0, 101.0, 104.0]
+    arxiv_retriever._reset_arxiv_api_request_throttle()
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(arxiv_retriever.time, "monotonic", lambda: monotonic_values.pop(0))
+
+    papers = retriever._retrieve_by_target_date("2026-05-12")
+
+    assert len(papers) == 2
+    assert sleeps == [2.0]
+
+
+def test_target_date_cools_down_after_repeated_429(config, monkeypatch):
+    retriever = _cond_mat_retriever(config)
+    with open_dict(config):
+        config.executor.arxiv_query_retries = 2
+        config.executor.arxiv_retry_base_seconds = 0
+        config.executor.arxiv_429_cooldown_retries = 1
+        config.executor.arxiv_429_cooldown_seconds = 90
+
+    responses = [
+        _http_error_response(429),
+        _http_error_response(429),
+        _response(_atom_feed(["2605.00001v1"], total=1)),
+    ]
+    sleeps = []
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", lambda *args, **kwargs: responses.pop(0))
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    papers = retriever._retrieve_by_target_date("2026-05-12")
+
+    assert len(papers) == 1
+    assert sleeps == [0, 90]
 
 
 def test_target_date_pagination_shortfall_fails_in_strict_mode(config, monkeypatch):

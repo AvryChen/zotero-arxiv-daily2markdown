@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 import multiprocessing
 import os
 import re
+import threading
 import time
 
 import arxiv
@@ -33,6 +34,9 @@ DOWNLOAD_TIMEOUT = (10, 60)
 FETCH_TIMEOUT = 30
 PDF_EXTRACT_TIMEOUT = 180
 TAR_EXTRACT_TIMEOUT = 180
+
+_ARXIV_API_REQUEST_LOCK = threading.Lock()
+_last_arxiv_api_request_at: float | None = None
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
@@ -187,6 +191,30 @@ def _retry_after_seconds(response: Any, fallback_seconds: float) -> float:
             except (TypeError, ValueError):
                 pass
     return fallback_seconds
+
+
+def _reset_arxiv_api_request_throttle() -> None:
+    global _last_arxiv_api_request_at
+    with _ARXIV_API_REQUEST_LOCK:
+        _last_arxiv_api_request_at = None
+
+
+def _sleep_before_arxiv_api_request(min_interval_seconds: float) -> None:
+    min_interval_seconds = max(0.0, min_interval_seconds)
+    if min_interval_seconds <= 0:
+        return
+
+    global _last_arxiv_api_request_at
+    with _ARXIV_API_REQUEST_LOCK:
+        now = time.monotonic()
+        if _last_arxiv_api_request_at is not None:
+            elapsed = now - _last_arxiv_api_request_at
+            wait_seconds = min_interval_seconds - elapsed
+            if wait_seconds > 0:
+                logger.debug(f"Waiting {wait_seconds:.1f}s before next arXiv API request")
+                time.sleep(wait_seconds)
+                now = time.monotonic()
+        _last_arxiv_api_request_at = now
 
 
 def _status_code_from_error(exc: Exception, response: Any | None = None) -> int | None:
@@ -475,6 +503,9 @@ class ArxivRetriever(BaseRetriever):
         retries = max(1, int(self.config.executor.get("arxiv_query_retries", 5)))
         base_delay = float(self.config.executor.get("arxiv_retry_base_seconds", 10))
         max_delay = float(self.config.executor.get("arxiv_retry_max_seconds", 120))
+        request_interval = float(self.config.executor.get("arxiv_request_interval_seconds", 3))
+        cooldown_retries = max(0, int(self.config.executor.get("arxiv_429_cooldown_retries", 1)))
+        cooldown_seconds = float(self.config.executor.get("arxiv_429_cooldown_seconds", 300))
         params = {
             "search_query": query,
             "start": start,
@@ -483,9 +514,13 @@ class ArxivRetriever(BaseRetriever):
             "sortOrder": "descending",
         }
 
-        for attempt in range(1, retries + 1):
+        attempt = 0
+        cooldowns_used = 0
+        while True:
+            attempt += 1
             response = None
             try:
+                _sleep_before_arxiv_api_request(request_interval)
                 response = requests.get(
                     ARXIV_API_URL,
                     params=params,
@@ -496,7 +531,20 @@ class ArxivRetriever(BaseRetriever):
             except requests.HTTPError as exc:
                 status_code = _status_code_from_error(exc, response)
                 should_retry = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
-                if not should_retry or attempt >= retries:
+                if not should_retry:
+                    raise
+                if attempt >= retries:
+                    if status_code == 429 and cooldowns_used < cooldown_retries:
+                        cooldowns_used += 1
+                        wait_seconds = _retry_after_seconds(response, cooldown_seconds)
+                        logger.warning(
+                            f"arXiv API is still rate-limiting start={start} after {attempt} attempts. "
+                            f"Cooling down for {wait_seconds:.1f}s "
+                            f"({cooldowns_used}/{cooldown_retries})"
+                        )
+                        time.sleep(wait_seconds)
+                        attempt = 0
+                        continue
                     raise
                 fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
                 wait_seconds = _retry_after_seconds(response, fallback_delay)
@@ -523,7 +571,8 @@ class ArxivRetriever(BaseRetriever):
             report.fetched_count = 0
             return []
 
-        client = arxiv.Client(num_retries=3, delay_seconds=3)
+        request_interval = max(0.0, float(self.config.executor.get("arxiv_request_interval_seconds", 3)))
+        client = arxiv.Client(num_retries=3, delay_seconds=request_interval)
         raw_papers: list[ArxivResult] = []
         returned_ids: list[str] = []
         batch_size = int(self.config.executor.get("arxiv_metadata_batch_size", 20))

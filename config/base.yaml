@@ -65,6 +65,9 @@ executor:
   cross_validation_mode: warn # dailyarxiv 交叉验证不一致时的处理方式。示例：'warn' 或 'fail'
   arxiv_page_size: 800 # 指定日期抓取时 arXiv API 每页请求数量。
   arxiv_query_retries: 5 # 指定日期抓取时，arXiv API 分页请求遇到 429 或 5xx 时的最大尝试次数。
+  arxiv_request_interval_seconds: 3 # arXiv API 请求之间的最小间隔秒数，遵守官方限速建议。
   arxiv_retry_base_seconds: 10 # arXiv API 分页请求重试的基础等待秒数，会按指数退避增长。
   arxiv_retry_max_seconds: 120 # arXiv API 分页请求单次重试等待的最大秒数。
+  arxiv_429_cooldown_seconds: 300 # 多次遇到 429 后额外冷却等待秒数；如果响应含 Retry-After 则优先使用响应值。
+  arxiv_429_cooldown_retries: 1 # 多次遇到 429 后额外冷却重试轮数。
   arxiv_metadata_batch_size: 20 # 从 RSS 获取 ID 后，批量查询 arXiv 元数据时的批大小。

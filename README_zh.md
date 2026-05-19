@@ -124,8 +124,11 @@ hugo:
 | `executor.start_date`, `executor.end_date` | 按闭区间回溯历史日期。 |
 | `executor.historical_mode` | 历史回溯模式：`export_only` 或 `email_and_export`。 |
 | `executor.skip_existing` | 回溯时，如果中英文 Hugo 文件都已存在，则跳过该日期。 |
+| `executor.continue_on_error` | 回溯时某一天失败后继续处理后续日期。 |
 | `executor.fetch_strict` | arXiv 完整性校验发现缺页或缺 ID 时是否直接失败。 |
 | `executor.cross_validate_dailyarxiv` | 对指定日期结果启用 dailyarxiv.com 交叉验证。 |
+| `executor.arxiv_request_interval_seconds` | arXiv API 请求之间的最小间隔秒数。 |
+| `executor.arxiv_429_cooldown_seconds` | 连续遇到 arXiv 429 后再次重试前的额外冷却秒数。 |
 | `hugo.output_dir` | Hugo 的 `content` 目录，或任何用于写入 `zh/posts` 与 `en/posts` 的目录。 |
 
 如果使用 API embedding 排序，可以这样配置：
