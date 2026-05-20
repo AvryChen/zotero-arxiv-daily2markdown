@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import feedparser
+from omegaconf import open_dict
 
 from zotero_arxiv_daily2markdown.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
 import zotero_arxiv_daily2markdown.retriever.arxiv_retriever as arxiv_retriever
@@ -16,6 +17,15 @@ def _sleep_and_return(value: str, delay_seconds: float) -> str:
 
 def _raise_runtime_error() -> None:
     raise RuntimeError("boom")
+
+
+def _rss_response():
+    text = """<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>cond-mat updates on arXiv.org</title>
+</feed>
+"""
+    return SimpleNamespace(content=text.encode(), text=text, raise_for_status=lambda: None)
 
 
 def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
@@ -66,6 +76,66 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
 
     assert len(papers) == len(matched_entries)
     assert set(p.title for p in papers) == set(e.title for e in matched_entries)
+
+
+def test_arxiv_rss_retries_after_connect_timeout(config, monkeypatch):
+    with open_dict(config):
+        config.executor.arxiv_rss_retries = 2
+        config.executor.arxiv_rss_retry_base_seconds = 0
+        config.executor.arxiv_rss_request_interval_seconds = 0
+        config.executor.arxiv_rss_cooldown_retries = 0
+
+    responses = [
+        arxiv_retriever.requests.ConnectTimeout("connect timeout"),
+        _rss_response(),
+    ]
+    sleeps = []
+
+    def fake_get(url, **kwargs):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    retriever = ArxivRetriever(config)
+    feed = retriever._fetch_arxiv_rss_feed("cond-mat", {})
+
+    assert feed.feed.title == "cond-mat updates on arXiv.org"
+    assert sleeps == [0]
+
+
+def test_arxiv_rss_cools_down_after_repeated_connect_timeouts(config, monkeypatch):
+    with open_dict(config):
+        config.executor.arxiv_rss_retries = 2
+        config.executor.arxiv_rss_retry_base_seconds = 0
+        config.executor.arxiv_rss_request_interval_seconds = 0
+        config.executor.arxiv_rss_cooldown_retries = 1
+        config.executor.arxiv_rss_cooldown_seconds = 90
+
+    responses = [
+        arxiv_retriever.requests.ConnectTimeout("connect timeout"),
+        arxiv_retriever.requests.ConnectTimeout("connect timeout"),
+        _rss_response(),
+    ]
+    sleeps = []
+
+    def fake_get(url, **kwargs):
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
+    monkeypatch.setattr(arxiv_retriever.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    retriever = ArxivRetriever(config)
+    feed = retriever._fetch_arxiv_rss_feed("cond-mat", {})
+
+    assert feed.feed.title == "cond-mat updates on arXiv.org"
+    assert sleeps == [0, 90]
 
 
 def test_arxiv_convert_to_paper_skips_full_text_when_disabled(config, monkeypatch):

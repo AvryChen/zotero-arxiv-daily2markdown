@@ -129,6 +129,8 @@ hugo:
 | `executor.cross_validate_dailyarxiv` | 对指定日期结果启用 dailyarxiv.com 交叉验证。 |
 | `executor.arxiv_request_interval_seconds` | arXiv API 请求之间的最小间隔秒数。 |
 | `executor.arxiv_429_cooldown_seconds` | 连续遇到 arXiv 429 后再次重试前的额外冷却秒数。 |
+| `executor.arxiv_rss_retries` | 最新论文 RSS 请求失败时的重试次数。 |
+| `executor.arxiv_rss_cooldown_seconds` | RSS 连续失败后再次重试前的额外冷却秒数。 |
 | `hugo.output_dir` | Hugo 的 `content` 目录，或任何用于写入 `zh/posts` 与 `en/posts` 的目录。 |
 
 如果使用 API embedding 排序，可以这样配置：

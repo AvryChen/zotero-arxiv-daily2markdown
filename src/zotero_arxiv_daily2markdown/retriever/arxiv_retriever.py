@@ -37,6 +37,8 @@ TAR_EXTRACT_TIMEOUT = 180
 
 _ARXIV_API_REQUEST_LOCK = threading.Lock()
 _last_arxiv_api_request_at: float | None = None
+_ARXIV_RSS_REQUEST_LOCK = threading.Lock()
+_last_arxiv_rss_request_at: float | None = None
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
@@ -199,22 +201,50 @@ def _reset_arxiv_api_request_throttle() -> None:
         _last_arxiv_api_request_at = None
 
 
-def _sleep_before_arxiv_api_request(min_interval_seconds: float) -> None:
+def _reset_arxiv_rss_request_throttle() -> None:
+    global _last_arxiv_rss_request_at
+    with _ARXIV_RSS_REQUEST_LOCK:
+        _last_arxiv_rss_request_at = None
+
+
+def _sleep_before_arxiv_request(
+    min_interval_seconds: float,
+    *,
+    lock: threading.Lock,
+    last_request_at: float | None,
+) -> float | None:
     min_interval_seconds = max(0.0, min_interval_seconds)
     if min_interval_seconds <= 0:
-        return
+        return last_request_at
 
-    global _last_arxiv_api_request_at
-    with _ARXIV_API_REQUEST_LOCK:
+    with lock:
         now = time.monotonic()
-        if _last_arxiv_api_request_at is not None:
-            elapsed = now - _last_arxiv_api_request_at
+        if last_request_at is not None:
+            elapsed = now - last_request_at
             wait_seconds = min_interval_seconds - elapsed
             if wait_seconds > 0:
-                logger.debug(f"Waiting {wait_seconds:.1f}s before next arXiv API request")
+                logger.debug(f"Waiting {wait_seconds:.1f}s before next arXiv request")
                 time.sleep(wait_seconds)
                 now = time.monotonic()
-        _last_arxiv_api_request_at = now
+        return now
+
+
+def _sleep_before_arxiv_api_request(min_interval_seconds: float) -> None:
+    global _last_arxiv_api_request_at
+    _last_arxiv_api_request_at = _sleep_before_arxiv_request(
+        min_interval_seconds,
+        lock=_ARXIV_API_REQUEST_LOCK,
+        last_request_at=_last_arxiv_api_request_at,
+    )
+
+
+def _sleep_before_arxiv_rss_request(min_interval_seconds: float) -> None:
+    global _last_arxiv_rss_request_at
+    _last_arxiv_rss_request_at = _sleep_before_arxiv_request(
+        min_interval_seconds,
+        lock=_ARXIV_RSS_REQUEST_LOCK,
+        last_request_at=_last_arxiv_rss_request_at,
+    )
 
 
 def _status_code_from_error(exc: Exception, response: Any | None = None) -> int | None:
@@ -414,9 +444,7 @@ class ArxivRetriever(BaseRetriever):
             feed_url = f"https://rss.arxiv.org/atom/{category}"
             logger.debug(f"Fetching arxiv rss feed from {feed_url}")
             try:
-                response = requests.get(feed_url, headers=headers, timeout=FETCH_TIMEOUT)
-                response.raise_for_status()
-                feed = feedparser.parse(response.content)
+                feed = self._fetch_arxiv_rss_feed(category, headers)
             except Exception as exc:
                 report.failed_pages.append(feed_url)
                 logger.warning(f"Failed to fetch RSS feed for {category}: {exc}")
@@ -444,6 +472,70 @@ class ArxivRetriever(BaseRetriever):
         self.last_fetch_report = report
         self._finalize_report(report)
         return raw_papers
+
+    def _fetch_arxiv_rss_feed(self, category: str, headers: dict[str, str]) -> Any:
+        retries = max(1, int(self.config.executor.get("arxiv_rss_retries", self.config.executor.get("arxiv_query_retries", 5))))
+        base_delay = float(self.config.executor.get("arxiv_rss_retry_base_seconds", self.config.executor.get("arxiv_retry_base_seconds", 10)))
+        max_delay = float(self.config.executor.get("arxiv_rss_retry_max_seconds", self.config.executor.get("arxiv_retry_max_seconds", 120)))
+        request_interval = float(self.config.executor.get("arxiv_rss_request_interval_seconds", self.config.executor.get("arxiv_request_interval_seconds", 3)))
+        cooldown_retries = max(0, int(self.config.executor.get("arxiv_rss_cooldown_retries", 1)))
+        cooldown_seconds = float(self.config.executor.get("arxiv_rss_cooldown_seconds", self.config.executor.get("arxiv_429_cooldown_seconds", 300)))
+        feed_url = f"https://rss.arxiv.org/atom/{category}"
+
+        attempt = 0
+        cooldowns_used = 0
+        while True:
+            attempt += 1
+            response = None
+            try:
+                _sleep_before_arxiv_rss_request(request_interval)
+                response = requests.get(feed_url, headers=headers, timeout=FETCH_TIMEOUT)
+                response.raise_for_status()
+                return feedparser.parse(response.content)
+            except requests.HTTPError as exc:
+                status_code = _status_code_from_error(exc, response)
+                should_retry = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
+                if not should_retry:
+                    raise
+                if attempt >= retries:
+                    if cooldowns_used < cooldown_retries:
+                        cooldowns_used += 1
+                        wait_seconds = _retry_after_seconds(response, cooldown_seconds)
+                        logger.warning(
+                            f"arXiv RSS is unavailable for {category} after {attempt} attempts. "
+                            f"Cooling down for {wait_seconds:.1f}s "
+                            f"({cooldowns_used}/{cooldown_retries})"
+                        )
+                        time.sleep(wait_seconds)
+                        attempt = 0
+                        continue
+                    raise
+                fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                wait_seconds = _retry_after_seconds(response, fallback_delay)
+                logger.warning(
+                    f"arXiv RSS returned HTTP {status_code} for {category}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
+            except requests.RequestException as exc:
+                if attempt >= retries:
+                    if cooldowns_used < cooldown_retries:
+                        cooldowns_used += 1
+                        logger.warning(
+                            f"arXiv RSS request failed for {category} after {attempt} attempts: {exc}. "
+                            f"Cooling down for {cooldown_seconds:.1f}s "
+                            f"({cooldowns_used}/{cooldown_retries})"
+                        )
+                        time.sleep(cooldown_seconds)
+                        attempt = 0
+                        continue
+                    raise
+                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                logger.warning(
+                    f"arXiv RSS request failed for {category}: {exc}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
 
     def _retrieve_by_target_date(self, target_date: str) -> list[RawArxivResult]:
         from_stamp, to_stamp = build_announcement_window(target_date)

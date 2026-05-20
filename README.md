@@ -129,6 +129,8 @@ Useful configuration fields:
 | `executor.cross_validate_dailyarxiv` | Compare target-date arXiv results with dailyarxiv.com. |
 | `executor.arxiv_request_interval_seconds` | Minimum spacing between arXiv API requests. |
 | `executor.arxiv_429_cooldown_seconds` | Extra cooldown before retrying after repeated arXiv 429 responses. |
+| `executor.arxiv_rss_retries` | Retry count for latest-paper RSS requests. |
+| `executor.arxiv_rss_cooldown_seconds` | Extra cooldown before retrying after repeated RSS failures. |
 | `hugo.output_dir` | Hugo `content` directory, or any directory where `zh/posts` and `en/posts` should be written. |
 
 For API-based embedding reranking, configure:
