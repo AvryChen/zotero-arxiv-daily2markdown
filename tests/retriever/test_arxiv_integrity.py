@@ -236,6 +236,7 @@ def test_metadata_lookup_reports_missing_requested_ids(config, monkeypatch):
         assert url == ARXIV_API_URL
         assert kwargs["headers"]["User-Agent"] == config.executor.arxiv_user_agent
         assert kwargs["params"]["id_list"] == ",".join(report.feed_ids)
+        assert kwargs["params"]["max_results"] == len(report.feed_ids)
         return _response(_atom_feed(["2605.00001v1", "2605.00002v1"], total=2))
 
     monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)

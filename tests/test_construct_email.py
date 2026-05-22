@@ -76,3 +76,9 @@ def test_get_block_html_contains_all_fields():
 def test_get_empty_html():
     html = get_empty_html()
     assert "No Papers Today" in html
+
+
+def test_render_email_can_include_revision_note():
+    paper = make_sample_paper()
+    html = render_email([paper], revision_note="昨日修订：2026-05-19")
+    assert "昨日修订：2026-05-19" in html

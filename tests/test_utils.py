@@ -5,6 +5,7 @@ import tarfile
 import io
 
 import pytest
+from omegaconf import open_dict
 
 from zotero_arxiv_daily2markdown.utils import glob_match, send_email, extract_tex_code_from_tar
 from tests.canned_responses import make_stub_smtp
@@ -184,6 +185,35 @@ def test_send_email_falls_back_to_plain(config, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", StubSMTP_SSL_Fails)
     send_email(config, "<html>plain</html>")
     assert len(sent) == 1
+
+
+def test_send_email_uses_ssl_first_for_port_465(config, monkeypatch):
+    sent = []
+    calls = []
+
+    with open_dict(config):
+        config.email.smtp_port = 465
+        config.email.smtp_timeout_seconds = 12
+
+    class StubSMTP:
+        def __init__(self, *args, **kwargs):
+            calls.append(("smtp", args, kwargs))
+
+        def starttls(self):
+            pass
+
+    class StubSMTPSSL(make_stub_smtp(sent)):
+        def __init__(self, *args, **kwargs):
+            calls.append(("ssl", args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(smtplib, "SMTP", StubSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", StubSMTPSSL)
+
+    send_email(config, "<html>ssl first</html>")
+
+    assert len(sent) == 1
+    assert calls == [("ssl", ("localhost", 465), {"timeout": 12.0})]
 
 
 # ---------------------------------------------------------------------------

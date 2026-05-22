@@ -65,6 +65,27 @@ def test_rerank_single_candidate_single_corpus():
     assert ranked[0].score is not None
 
 
+def test_rerank_empty_corpus_assigns_zero_score_without_similarity_call():
+    papers = [make_sample_paper(title="P")]
+
+    class NoSimilarityReranker(StubReranker):
+        def get_similarity_score(self, s1, s2):
+            raise AssertionError("empty corpus should not call similarity")
+
+    ranked = NoSimilarityReranker(np.empty((0, 0))).rerank(papers, [])
+
+    assert ranked == papers
+    assert ranked[0].score == 0.0
+
+
+def test_rerank_empty_candidates_returns_empty_without_similarity_call():
+    class NoSimilarityReranker(StubReranker):
+        def get_similarity_score(self, s1, s2):
+            raise AssertionError("empty candidates should not call similarity")
+
+    assert NoSimilarityReranker(np.empty((0, 0))).rerank([], make_sample_corpus(1)) == []
+
+
 def test_rerank_can_exclude_full_text():
     corpus = make_sample_corpus(1)
     papers = [make_sample_paper(title="P", abstract="ABSTRACT", full_text="FULL TEXT")]

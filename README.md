@@ -13,23 +13,26 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 - Rank papers with either a local SentenceTransformers model or an embedding API.
 - Fetch full text only after final selection, trying HTML, PDF, then TeX source.
 - Generate Chinese/English summaries, affiliations, and a daily overview through a Chat Completions-compatible API.
-- Export an HTML email digest and bilingual Hugo posts.
+- Export an HTML email digest and bilingual Hugo posts; email delivery is best-effort and will not block Hugo export.
+- Automatically re-check the previous day's post on the next daily run using the same Zotero relevance corpus, then overwrite yesterday's Hugo output if the historical API result adds or changes papers. Revision email delivery is also best-effort.
 - Backfill historical date ranges with skip-existing, continue-on-error, and day-level cooldown controls.
 - Route only arXiv requests through an optional HTTP/SOCKS proxy such as V2rayN.
 - Cache arXiv RSS/API/full-text responses under `outputs/cache/arxiv`.
-- Send alert emails when arXiv fetching fails, returns incomplete data, or a historical day fails.
+- Send best-effort alert emails when arXiv fetching fails, returns incomplete data, or a historical day fails.
 
 ## Pipeline
 
 1. Load `config/default.yaml`, which merges `config/base.yaml` and `config/custom.yaml`.
 2. Read Zotero `conferencePaper`, `journalArticle`, and `preprint` items, ignoring items without abstracts.
 3. Optionally filter the Zotero corpus with `zotero.include_path` and `zotero.ignore_path`.
-4. Fetch arXiv candidates from RSS or from a target announcement date window.
+4. Fetch arXiv candidates from RSS or from a target announcement date window. Latest/RSS mode uses RSS metadata directly and does not call the arXiv API again for per-paper metadata.
 5. Rank candidates using title and abstract only.
 6. Apply `executor.score_threshold` and cap final selections by `executor.max_paper_num`.
 7. Fetch full text only for those final selected papers.
 8. Generate TL;DRs, English translations, affiliations, and a daily overview.
-9. Send email when enabled and export Hugo Markdown when `hugo.output_dir` is configured.
+9. Try to send email when enabled; SMTP failures are logged and skipped so Hugo export can continue.
+10. Export Hugo Markdown when `hugo.output_dir` is configured.
+11. On the next daily run, re-run the previous day through the historical API path with the same Zotero corpus and correct the previous post if its paper set differs.
 
 ## arXiv Access Policy
 
@@ -42,6 +45,7 @@ The project intentionally avoids aggressive crawling:
 - Historical backfill waits `600` seconds between processed dates by default.
 - Full text is not downloaded for every candidate, only for final selected papers.
 - Cached arXiv responses are reused when available.
+- Latest/RSS runs avoid the arXiv API metadata endpoint; date-based runs still use `export.arxiv.org/api/query`.
 
 ## Requirements
 
@@ -144,6 +148,7 @@ hugo:
 | `executor.error_email_enabled` | Send alert email on arXiv fetch errors or integrity failures. |
 | `executor.arxiv_proxy_enabled`, `executor.arxiv_proxy_url` | Route only arXiv requests through a local HTTP/SOCKS proxy. |
 | `executor.arxiv_429_cooldown_seconds`, `executor.arxiv_failure_cooldown_seconds` | Extra cooldown after repeated rate-limit or connection failures. |
+| `email.smtp_timeout_seconds` | SMTP connect/login/send timeout. Email failures are logged and skipped after this timeout. |
 | `hugo.output_dir` | Hugo `content` directory, or any directory with `zh/posts` and `en/posts`. |
 
 ## V2rayN Proxy
@@ -198,6 +203,8 @@ Latest-paper workflow:
 uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
+This mode has a built-in next-day correction pass: the next daily run will re-check yesterday's papers through the historical API path, reuse the current Zotero corpus for ranking, overwrite yesterday's Hugo files if needed, and try to send a revision email when the paper set changes. If the revision email fails, the correction still counts as complete once Hugo export succeeds.
+
 One arXiv announcement date:
 
 ```bash
@@ -250,7 +257,7 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
 
 ## Output
 
-Email output is an HTML digest with paper titles, authors, affiliations, relevance scores, summaries, and PDF links.
+Email output is an HTML digest with paper titles, authors, affiliations, relevance scores, summaries, and PDF links. Email is treated as notification only: SMTP timeout, login, or send failures are logged and do not stop Hugo export or historical backfill.
 
 When `hugo.output_dir` is set, the exporter writes:
 

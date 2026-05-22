@@ -513,6 +513,50 @@ def _parse_atom_feed(xml_text: str) -> tuple[list[RawArxivResult], int]:
     return entries, total_results
 
 
+def _clean_rss_summary(summary: Any) -> str:
+    summary_text = re.sub(r"\s+", " ", str(summary or "")).strip()
+    summary_text = re.sub(
+        r"^arXiv:\S+\s+Announce Type:\s+\S+\s*",
+        "",
+        summary_text,
+        flags=re.IGNORECASE,
+    ).strip()
+    summary_text = re.sub(r"^Abstract:\s*", "", summary_text, flags=re.IGNORECASE).strip()
+    return summary_text
+
+
+def _rss_entry_authors(entry: Any) -> list[RawArxivAuthor]:
+    names: list[str] = []
+    for author in entry.get("authors", []) or []:
+        name = author.get("name") if isinstance(author, dict) else getattr(author, "name", None)
+        if name:
+            names.extend(part.strip() for part in str(name).split(","))
+    if not names and entry.get("author"):
+        names.extend(part.strip() for part in str(entry.get("author")).split(","))
+    return [RawArxivAuthor(name=re.sub(r"\s+", " ", name).strip()) for name in names if name.strip()]
+
+
+def _raw_result_from_rss_entry(entry: Any) -> RawArxivResult:
+    paper_id = extract_arxiv_id(str(entry.id))
+    categories = [
+        tag.get("term")
+        for tag in (entry.get("tags", []) or [])
+        if isinstance(tag, dict) and tag.get("term")
+    ]
+    entry_id = f"https://arxiv.org/abs/{paper_id}"
+    return RawArxivResult(
+        title=re.sub(r"\s+", " ", str(entry.get("title", ""))).strip(),
+        authors=_rss_entry_authors(entry),
+        summary=_clean_rss_summary(entry.get("summary", "")),
+        pdf_url=f"https://arxiv.org/pdf/{paper_id}",
+        entry_id=entry_id,
+        published=entry.get("published"),
+        updated=entry.get("updated"),
+        categories=categories,
+        primary_category=categories[0] if categories else None,
+    )
+
+
 @register_retriever("arxiv")
 class ArxivRetriever(BaseRetriever):
     def __init__(self, config):
@@ -746,12 +790,13 @@ class ArxivRetriever(BaseRetriever):
             raw_papers = raw_papers[:10]
         return raw_papers
 
-    def _retrieve_latest_from_rss(self) -> list[ArxivResult]:
+    def _retrieve_latest_from_rss(self) -> list[RawArxivResult]:
         report = ArxivFetchReport(mode="rss")
         include_cross_list = get_config_bool(self.config.source.arxiv, "include_cross_list", False)
         allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
 
         all_paper_ids: list[str] = []
+        raw_papers_by_id: dict[str, RawArxivResult] = {}
         for category in self.categories:
             feed_url = f"https://rss.arxiv.org/atom/{category}"
             logger.debug(f"Fetching arxiv rss feed from {feed_url}")
@@ -767,20 +812,27 @@ class ArxivRetriever(BaseRetriever):
                 logger.warning(f"Invalid ARXIV_QUERY: {category}. Skipping.")
                 continue
 
-            cat_paper_ids = [
-                extract_arxiv_id(entry.id)
+            cat_entries = [
+                entry
                 for entry in feed.entries
                 if entry.get("arxiv_announce_type", "new") in allowed_announce_types
             ]
+            cat_paper_ids = [extract_arxiv_id(str(entry.id)) for entry in cat_entries]
             logger.info(f"Found {len(feed.entries)} entries for {category}, {len(cat_paper_ids)} matched types {allowed_announce_types}")
             all_paper_ids.extend(cat_paper_ids)
+            for entry in cat_entries:
+                paper_id = extract_arxiv_id(str(entry.id))
+                if paper_id not in raw_papers_by_id:
+                    raw_papers_by_id[paper_id] = _raw_result_from_rss_entry(entry)
 
         unique_ids, duplicate_ids = stable_unique(all_paper_ids)
         report.feed_ids = unique_ids
         report.duplicate_ids = duplicate_ids
         report.expected_count = len(unique_ids)
-
-        raw_papers = self._fetch_metadata_by_ids(unique_ids, report)
+        raw_papers = [raw_papers_by_id[paper_id] for paper_id in unique_ids if paper_id in raw_papers_by_id]
+        report.fetched_ids = [extract_arxiv_id(result.entry_id) for result in raw_papers]
+        report.fetched_count = len(report.fetched_ids)
+        report.missing_ids = [paper_id for paper_id in unique_ids if paper_id not in set(report.fetched_ids)]
         self.last_fetch_report = report
         self._finalize_report(report)
         return raw_papers
@@ -880,7 +932,7 @@ class ArxivRetriever(BaseRetriever):
             try:
                 text = self._arxiv_get_text(
                     ARXIV_API_URL,
-                    params={"id_list": ",".join(batch_ids)},
+                    params={"id_list": ",".join(batch_ids), "max_results": len(batch_ids)},
                     cache_kind="api_metadata",
                 )
                 batch_results, _total = _parse_atom_feed(text)

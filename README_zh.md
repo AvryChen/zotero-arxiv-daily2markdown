@@ -13,23 +13,26 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 使用本地 SentenceTransformers 模型或 embedding API 做相关度排序。
 - 仅对最终入选论文抓全文，按 HTML、PDF、TeX source 顺序尝试。
 - 通过兼容 Chat Completions 的 API 生成中英文摘要、作者机构和每日概览。
-- 导出 HTML 邮件摘要和中英文 Hugo 文章。
+- 导出 HTML 邮件摘要和中英文 Hugo 文章；邮件发送是 best-effort，失败不会阻塞 Hugo 导出。
+- 每次日常运行都会在下一次自动回看昨天的内容，并复用同一份 Zotero 兴趣语料排序；若历史 API 结果比当天推送多出或改动了论文，就覆盖昨天的 Hugo 输出。“昨日修订”邮件同样是 best-effort。
 - 支持历史日期区间回溯、跳过已存在输出、失败后继续、日期间冷却。
 - 可只让 arXiv 请求走 HTTP/SOCKS 代理，例如 V2rayN。
 - 将 arXiv RSS/API/全文响应缓存到 `outputs/cache/arxiv`。
-- arXiv 抓取失败、数据不完整或回溯某天失败时发送告警邮件。
+- arXiv 抓取失败、数据不完整或回溯某天失败时尽量发送告警邮件；告警邮件失败不会中断主流程。
 
 ## 工作流程
 
 1. 加载 `config/default.yaml`，它会合并 `config/base.yaml` 和 `config/custom.yaml`。
 2. 读取 Zotero 中的 `conferencePaper`、`journalArticle`、`preprint` 条目，并忽略没有摘要的条目。
 3. 可选地用 `zotero.include_path` 和 `zotero.ignore_path` 筛选 Zotero 语料。
-4. 从 RSS 或目标公告日期窗口抓取 arXiv 候选论文。
+4. 从 RSS 或目标公告日期窗口抓取 arXiv 候选论文。最新/RSS 模式直接使用 RSS 中的 metadata，不再额外调用 arXiv API 补查每篇论文。
 5. 只用标题和摘要对候选论文排序。
 6. 应用 `executor.score_threshold`，并用 `executor.max_paper_num` 限制最终入选数量。
 7. 仅对最终入选论文抓取全文。
 8. 生成 TL;DR、英文翻译、作者机构和每日概览。
-9. 按配置发送邮件，并在设置 `hugo.output_dir` 时导出 Hugo Markdown。
+9. 按配置尝试发送邮件；如果 SMTP 超时、登录失败或发送失败，只记录 warning 并继续。
+10. 在设置 `hugo.output_dir` 时导出 Hugo Markdown。
+11. 下一次日常运行会再用历史 API 回看昨天的文章，并使用同一份 Zotero 语料排序；若论文集合有差异则自动修正昨天的输出。
 
 ## arXiv 访问策略
 
@@ -42,6 +45,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 历史回溯默认每处理一天后等待 `600` 秒。
 - 不再给每个候选论文下载全文，只对最终入选论文抓取。
 - 已缓存的 arXiv 响应会被复用。
+- 最新/RSS 模式不会再访问 arXiv API metadata 端点；指定日期和历史回溯仍会使用 `export.arxiv.org/api/query`。
 
 ## 环境要求
 
@@ -144,6 +148,7 @@ hugo:
 | `executor.error_email_enabled` | arXiv 抓取异常或完整性失败时是否发送告警邮件。 |
 | `executor.arxiv_proxy_enabled`, `executor.arxiv_proxy_url` | 仅让 arXiv 请求走本地 HTTP/SOCKS 代理。 |
 | `executor.arxiv_429_cooldown_seconds`, `executor.arxiv_failure_cooldown_seconds` | 连续遇到限流或连接失败后的额外冷却秒数。 |
+| `email.smtp_timeout_seconds` | SMTP 连接、登录和发送的超时时间；超过后跳过邮件并继续导出。 |
 | `hugo.output_dir` | Hugo 的 `content` 目录，或任何包含 `zh/posts` 与 `en/posts` 的输出目录。 |
 
 ## V2rayN 代理
@@ -198,6 +203,8 @@ reranker:
 uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
+这个模式包含“次日校正”：第二天的日常运行会再次通过历史 API 检查昨天的论文，并复用当前 Zotero 语料排序；必要时覆盖昨天的 Hugo 文件，并尝试补发一封说明差异的修订邮件。如果修订邮件失败，只要 Hugo 导出成功，校正仍会视为完成。
+
 运行某个 arXiv 公告日期：
 
 ```bash
@@ -250,7 +257,7 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
 
 ## 输出
 
-邮件输出是 HTML digest，包含论文标题、作者、机构、相关度分数、摘要和 PDF 链接。
+邮件输出是 HTML digest，包含论文标题、作者、机构、相关度分数、摘要和 PDF 链接。邮件只作为通知层：SMTP 超时、登录失败或发送失败会被记录并跳过，不会阻止 Hugo 导出或历史回溯继续。
 
 配置 `hugo.output_dir` 后，会写入：
 

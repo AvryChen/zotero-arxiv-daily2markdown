@@ -48,8 +48,6 @@ def _atom_response():
 def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
     arxiv_retriever._reset_arxiv_request_throttle()
 
-    # The RSS fixture gives us paper IDs.  After feedparser, the code calls the
-    # arXiv API metadata endpoint, so we mock that metadata lookup.
     include_cross_list = config.source.arxiv.get("include_cross_list", False)
     allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
     matched_entries = [
@@ -57,31 +55,10 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
         if e.get("arxiv_announce_type", "new") in allowed_announce_types
     ]
 
-    # Build fake ArxivResult-like objects matching each RSS entry
-    fake_results = []
-    for entry in matched_entries:
-        pid = entry.id.removeprefix("oai:arXiv.org:")
-        fake_results.append(SimpleNamespace(
-            title=entry.title,
-            authors=[SimpleNamespace(name="Test Author")],
-            summary="Test abstract",
-            pdf_url=f"https://arxiv.org/pdf/{pid}",
-            entry_id=f"https://arxiv.org/abs/{pid}",
-            source_url=lambda pid=pid: f"https://arxiv.org/e-print/{pid}",
-        ))
+    def fail_metadata_lookup(self, ids, report):
+        raise AssertionError("RSS mode should not call export.arxiv.org metadata API")
 
-    def fake_fetch_metadata(self, ids, report):
-        requested = set(ids)
-        results = [
-            result
-            for result in fake_results
-            if result.entry_id.removeprefix("https://arxiv.org/abs/") in requested
-        ]
-        report.fetched_ids = ids
-        report.fetched_count = len(results)
-        return results
-
-    monkeypatch.setattr(ArxivRetriever, "_fetch_metadata_by_ids", fake_fetch_metadata)
+    monkeypatch.setattr(ArxivRetriever, "_fetch_metadata_by_ids", fail_metadata_lookup)
 
     # Skip file downloads in convert_to_paper
     monkeypatch.setattr(arxiv_retriever, "extract_text_from_html", lambda paper: None)
@@ -93,6 +70,10 @@ def test_arxiv_retriever(config, mock_feedparser, monkeypatch):
 
     assert len(papers) == len(matched_entries)
     assert set(p.title for p in papers) == set(e.title for e in matched_entries)
+    assert all(not paper.abstract.startswith("arXiv:") for paper in papers)
+    assert all(paper.pdf_url.startswith("https://arxiv.org/pdf/") for paper in papers)
+    assert retriever.last_fetch_report.expected_count == len(matched_entries)
+    assert retriever.last_fetch_report.fetched_count == len(matched_entries)
 
 
 def test_arxiv_rss_retries_after_connect_timeout(config, monkeypatch):

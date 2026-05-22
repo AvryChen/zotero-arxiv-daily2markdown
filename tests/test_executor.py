@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily2markdown.executor import Executor, expand_date_range, normalize_path_patterns
+from zotero_arxiv_daily2markdown.executor import DailyRunResult, Executor, SingleDayArtifacts, expand_date_range, normalize_path_patterns
 from zotero_arxiv_daily2markdown.protocol import CorpusPaper
 
 
@@ -600,6 +600,37 @@ def test_run_single_day_sends_error_email_on_failure(config, monkeypatch):
     assert "source=arxiv mode=rss expected=1 fetched=0" in sent[0][1]
 
 
+def test_run_single_day_email_failure_still_exports(config, monkeypatch):
+    from tests.canned_responses import make_sample_paper
+
+    paper = make_sample_paper()
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date=None, retrieved_count=1, selected_count=1),
+        papers=[paper],
+        overview_zh="overview zh",
+        overview_en="overview en",
+    )
+
+    export_calls = []
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("smtp timed out")),
+    )
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.export_to_hugo",
+        lambda *args, **kwargs: export_calls.append(args),
+    )
+
+    result = executor._run_single_day([])
+
+    assert result.emailed is False
+    assert result.exported is True
+    assert len(export_calls) == 1
+    assert export_calls[0][0] == [paper]
+
+
 def test_run_date_range_can_send_email(config):
     from omegaconf import open_dict
 
@@ -618,6 +649,168 @@ def test_run_date_range_can_send_email(config):
     executor._run_date_range(["2026-05-01"], [])
 
     assert send_flags == [True]
+
+
+def test_run_triggers_previous_day_correction_for_latest_mode(config, monkeypatch):
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    calls = []
+    corpus = [CorpusPaper(title="C", abstract="A", added_date=datetime(2026, 1, 1), paths=[])]
+
+    executor.fetch_zotero_corpus = lambda: corpus
+    executor.filter_corpus = lambda items: items
+    executor._run_single_day = lambda corpus, send_email_enabled=True: DailyRunResult(target_date=None)
+    executor._apply_previous_day_correction = lambda correction_corpus: calls.append(("correction", correction_corpus))
+
+    executor.run()
+
+    assert calls == [("correction", corpus)]
+
+
+def test_run_does_not_trigger_previous_day_correction_in_historical_mode(config, monkeypatch):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.start_date = "2026-05-01"
+        config.executor.end_date = "2026-05-03"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    calls = []
+    corpus = [CorpusPaper(title="C", abstract="A", added_date=datetime(2026, 1, 1), paths=[])]
+
+    executor.fetch_zotero_corpus = lambda: corpus
+    executor.filter_corpus = lambda items: items
+    executor._run_date_range = lambda dates, corpus: calls.append(("date_range", dates)) or []
+    executor._apply_previous_day_correction = lambda correction_corpus: calls.append(("correction", correction_corpus))
+
+    executor.run()
+
+    assert calls == [("date_range", ["2026-05-01", "2026-05-02", "2026-05-03"])]
+
+
+def test_previous_day_correction_skips_when_hugo_urls_match(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+    from tests.canned_responses import make_sample_paper
+    from zotero_arxiv_daily2markdown.executor import SingleDayArtifacts
+
+    with open_dict(config):
+        config.hugo.output_dir = str(tmp_path)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._correction_target_date = lambda: "2026-05-19"
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date="2026-05-19"),
+        papers=[make_sample_paper(url="https://arxiv.org/abs/2605.00001v1")],
+        overview_zh="overview zh",
+        overview_en="overview en",
+    )
+
+    zh_path = tmp_path / "zh" / "posts" / "2026-05-19-arxiv-daily.md"
+    en_path = tmp_path / "en" / "posts" / "2026-05-19-arxiv-daily.md"
+    zh_path.parent.mkdir(parents=True, exist_ok=True)
+    en_path.parent.mkdir(parents=True, exist_ok=True)
+    zh_path.write_text(
+        "- **Link**: [https://arxiv.org/abs/2605.00001v1](https://arxiv.org/abs/2605.00001v1)\n",
+        encoding="utf-8",
+    )
+    en_path.write_text(
+        "- **Link**: [https://arxiv.org/abs/2605.00001v1](https://arxiv.org/abs/2605.00001v1)\n",
+        encoding="utf-8",
+    )
+
+    export_calls = []
+    email_calls = []
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.export_to_hugo", lambda *args, **kwargs: export_calls.append(args))
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda config, html, subject=None: email_calls.append((subject, html)),
+    )
+
+    executor._apply_previous_day_correction()
+
+    assert export_calls == []
+    assert email_calls == []
+
+
+def test_previous_day_correction_overwrites_and_emails_when_hugo_urls_change(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+    from tests.canned_responses import make_sample_paper
+    from zotero_arxiv_daily2markdown.executor import SingleDayArtifacts
+
+    with open_dict(config):
+        config.hugo.output_dir = str(tmp_path)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._correction_target_date = lambda: "2026-05-19"
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date="2026-05-19"),
+        papers=[make_sample_paper(url="https://arxiv.org/abs/2605.00001v1")],
+        overview_zh="overview zh",
+        overview_en="overview en",
+    )
+
+    zh_path = tmp_path / "zh" / "posts" / "2026-05-19-arxiv-daily.md"
+    en_path = tmp_path / "en" / "posts" / "2026-05-19-arxiv-daily.md"
+    zh_path.parent.mkdir(parents=True, exist_ok=True)
+    en_path.parent.mkdir(parents=True, exist_ok=True)
+    zh_path.write_text(
+        "- **Link**: [https://arxiv.org/abs/2605.00002v1](https://arxiv.org/abs/2605.00002v1)\n",
+        encoding="utf-8",
+    )
+    en_path.write_text(
+        "- **Link**: [https://arxiv.org/abs/2605.00002v1](https://arxiv.org/abs/2605.00002v1)\n",
+        encoding="utf-8",
+    )
+
+    export_calls = []
+    email_calls = []
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.export_to_hugo", lambda *args, **kwargs: export_calls.append(args))
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda config, html, subject=None: email_calls.append((subject, html)),
+    )
+
+    executor._apply_previous_day_correction()
+
+    assert len(export_calls) == 1
+    assert export_calls[0][0][0].url == "https://arxiv.org/abs/2605.00001v1"
+    assert email_calls and email_calls[0][0] == "arXiv Daily revision: 2026-05-19"
+    assert "昨日修订：2026-05-19" in email_calls[0][1]
+
+
+def test_previous_day_correction_ignores_revision_email_failure(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.hugo.output_dir = str(tmp_path)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._correction_target_date = lambda: "2026-05-19"
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date="2026-05-19"),
+        papers=[make_sample_paper(url="https://arxiv.org/abs/2605.00001v1")],
+        overview_zh="overview zh",
+        overview_en="overview en",
+    )
+    executor._send_error_email = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("revision email failure should not become run failure")
+    )
+
+    export_calls = []
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.export_to_hugo", lambda *args, **kwargs: export_calls.append(args))
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError("smtp timed out")),
+    )
+
+    executor._apply_previous_day_correction()
+
+    assert len(export_calls) == 1
 
 
 def test_run_date_range_skips_existing_hugo_outputs(config):

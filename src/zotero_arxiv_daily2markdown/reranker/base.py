@@ -19,6 +19,13 @@ class BaseReranker(ABC):
         include_english_tldr: bool = False,
         max_full_text_chars: int | None = None,
     ) -> list[Paper]:
+        if len(candidates) == 0:
+            return candidates
+        if len(corpus) == 0:
+            for candidate in candidates:
+                candidate.score = 0.0
+            return candidates
+
         corpus = sorted(corpus,key=lambda x: x.added_date,reverse=True)
         time_decay_weight = 1 / (1 + np.log10(np.arange(len(corpus)) + 1))
         time_decay_weight: np.ndarray = time_decay_weight / time_decay_weight.sum()

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from tests.canned_responses import make_sample_paper
-from zotero_arxiv_daily2markdown.hugo_exporter import _render_post_markdown
+from zotero_arxiv_daily2markdown.hugo_exporter import _render_post_markdown, extract_hugo_paper_urls
 
 
 def test_render_post_markdown_includes_publication_window_zh():
@@ -86,3 +86,18 @@ def test_render_post_markdown_accepts_string_publication_times():
     )
 
     assert "2026-05-19 00:00 to 2026-05-19 00:00 UTC" in markdown
+
+
+def test_extract_hugo_paper_urls_parses_link_lines():
+    markdown = """
+## 1. Paper
+- **Link**: [https://arxiv.org/abs/2605.00001v1](https://arxiv.org/abs/2605.00001v1)
+
+## 2. Another
+- **Link**: [https://arxiv.org/abs/2605.00002v1](https://arxiv.org/abs/2605.00002v1)
+"""
+
+    assert extract_hugo_paper_urls(markdown) == [
+        "https://arxiv.org/abs/2605.00001v1",
+        "https://arxiv.org/abs/2605.00002v1",
+    ]

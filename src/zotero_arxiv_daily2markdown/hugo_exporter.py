@@ -1,10 +1,67 @@
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 from omegaconf import DictConfig
 from .protocol import Paper
 import subprocess
 import re
+
+
+@dataclass
+class HugoExportArtifacts:
+    date_str: str
+    post_date_time: str
+    topic: str
+    filepath_zh: str
+    filepath_en: str
+    content_zh: str
+    content_en: str
+
+
+def _resolve_hugo_date_metadata(config: DictConfig) -> tuple[str, str]:
+    if hasattr(config.executor, "target_date") and config.executor.target_date:
+        date_str = config.executor.target_date
+        post_date_time = f"{date_str}T20:00:00+08:00"
+    else:
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d")
+        post_date_time = now.strftime("%Y-%m-%dT%H:%M:%S+08:00")
+    return date_str, post_date_time
+
+
+def _resolve_hugo_output_paths(config: DictConfig, date_str: str) -> tuple[str, str]:
+    output_dir = config.hugo.output_dir
+    filename = f"{date_str}-arxiv-daily.md"
+    filepath_zh = os.path.join(output_dir, "zh", "posts", filename)
+    filepath_en = os.path.join(output_dir, "en", "posts", filename)
+    return filepath_zh, filepath_en
+
+
+def build_hugo_export_artifacts(
+    papers: list[Paper],
+    config: DictConfig,
+    overview_zh: str = "",
+    overview_en: str = "",
+) -> HugoExportArtifacts:
+    date_str, post_date_time = _resolve_hugo_date_metadata(config)
+    prompt_cfg = config.get("prompt", {})
+    topic = prompt_cfg.get("topic", "research")
+    filepath_zh, filepath_en = _resolve_hugo_output_paths(config, date_str)
+    return HugoExportArtifacts(
+        date_str=date_str,
+        post_date_time=post_date_time,
+        topic=topic,
+        filepath_zh=filepath_zh,
+        filepath_en=filepath_en,
+        content_zh=_render_post_markdown(papers, "zh", date_str, post_date_time, topic, overview_zh),
+        content_en=_render_post_markdown(papers, "en", date_str, post_date_time, topic, overview_en),
+    )
+
+
+def extract_hugo_paper_urls(markdown: str) -> list[str]:
+    pattern = re.compile(r"^- \*\*Link\*\*:\s+\[(?P<url>[^\]]+)\]\((?P=url)\)$", re.MULTILINE)
+    return [match.group("url").strip() for match in pattern.finditer(markdown)]
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
@@ -134,28 +191,14 @@ def _render_post_markdown(
 def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "", overview_en: str = ""):
     if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
         return
-        
-    output_dir = config.hugo.output_dir
-    os.makedirs(os.path.join(output_dir, "zh", "posts"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "en", "posts"), exist_ok=True)
-    
-    if hasattr(config.executor, "target_date") and config.executor.target_date:
-        date_str = config.executor.target_date
-        post_date_time = f"{date_str}T20:00:00+08:00"
-    else:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        post_date_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+08:00")
-        
-    filename = f"{date_str}-arxiv-daily.md"
-    filepath_zh = os.path.join(output_dir, "zh", "posts", filename)
-    filepath_en = os.path.join(output_dir, "en", "posts", filename)
-    
-    prompt_cfg = config.get("prompt", {})
-    topic = prompt_cfg.get("topic", "research")
+    artifacts = build_hugo_export_artifacts(papers, config, overview_zh=overview_zh, overview_en=overview_en)
+    os.makedirs(os.path.dirname(artifacts.filepath_zh), exist_ok=True)
+    os.makedirs(os.path.dirname(artifacts.filepath_en), exist_ok=True)
     
     # Auto push to Github
     if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
         logger.info("Starting git operations for Hugo website...")
+        output_dir = config.hugo.output_dir
         repo_dir = os.path.dirname(output_dir) if os.path.basename(output_dir) == "content" else output_dir
         
         try:
@@ -171,19 +214,19 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
         except Exception as e:
             logger.warning(f"Initial git pull failed: {e}. Proceeding anyway...")
 
-    with open(filepath_zh, "w", encoding="utf-8") as f:
-        f.write(_render_post_markdown(papers, "zh", date_str, post_date_time, topic, overview_zh))
+    with open(artifacts.filepath_zh, "w", encoding="utf-8") as f:
+        f.write(artifacts.content_zh)
 
-    with open(filepath_en, "w", encoding="utf-8") as f:
-        f.write(_render_post_markdown(papers, "en", date_str, post_date_time, topic, overview_en))
+    with open(artifacts.filepath_en, "w", encoding="utf-8") as f:
+        f.write(artifacts.content_en)
         
-    logger.info(f"Hugo markdown exported successfully to {filepath_zh} and {filepath_en}")
+    logger.info(f"Hugo markdown exported successfully to {artifacts.filepath_zh} and {artifacts.filepath_en}")
     
     # Commit and Push
     if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
         try:
-            subprocess.run(["git", "add", filepath_zh, filepath_en], cwd=repo_dir, check=True)
-            commit_msg = f"Auto: Add arXiv daily for {date_str}"
+            subprocess.run(["git", "add", artifacts.filepath_zh, artifacts.filepath_en], cwd=repo_dir, check=True)
+            commit_msg = f"Auto: Add arXiv daily for {artifacts.date_str}"
             # Check if there are changes to commit
             status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
             if status:

@@ -14,6 +14,7 @@ email:
   receiver: ??? # 接收论文列表的邮箱账号。示例：abc@outlook.com
   smtp_server: ??? # 发件邮箱的 SMTP 服务器，可向邮箱服务商查询。示例：smtp.qq.com
   smtp_port: ??? # SMTP 服务器端口。示例：465
+  smtp_timeout_seconds: 20 # SMTP 连接、登录和发送的超时时间，避免网络异常时一直卡住。示例：20
   sender_password: ??? # 发件邮箱的 SMTP 密码或授权码，通常不是邮箱登录密码。示例：abcdefghijklmn
 
 llm:

@@ -1,5 +1,6 @@
 from .protocol import Paper
 import math
+import html
 
 
 framework = """
@@ -51,6 +52,19 @@ def get_empty_html():
   </table>
   """
   return block_template
+
+
+def _get_revision_notice_html(revision_note: str) -> str:
+  safe_note = html.escape(revision_note)
+  return f"""
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #f0ad4e; border-radius: 8px; padding: 16px; background-color: #fff8e6;">
+  <tr>
+    <td style="font-size: 18px; font-weight: bold; color: #8a5a00;">
+        {safe_note}
+    </td>
+  </tr>
+  </table>
+  """
 
 def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affiliations:str=None):
     block_template = """
@@ -104,10 +118,12 @@ def get_stars(score:float):
         return '<div class="star-wrapper">'+full_star * full_star_num + half_star * half_star_num + '</div>'
 
 
-def render_email(papers:list[Paper]) -> str:
+def render_email(papers:list[Paper], revision_note: str | None = None) -> str:
     parts = []
+    if revision_note:
+        parts.append(_get_revision_notice_html(revision_note))
     if len(papers) == 0 :
-        return framework.replace('__CONTENT__', get_empty_html())
+        return framework.replace('__CONTENT__', "".join(parts) + get_empty_html())
     
     for p in papers:
         #rate = get_stars(p.score)

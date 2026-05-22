@@ -7,18 +7,19 @@ import time
 import traceback
 from .utils import glob_match, to_bool
 from .retriever import get_retriever_cls
-from .protocol import CorpusPaper
+from .protocol import CorpusPaper, Paper
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from .reranker import get_reranker_cls
 from .construct_email import render_email
 from .utils import send_email
-from .hugo_exporter import export_to_hugo
+from .hugo_exporter import build_hugo_export_artifacts, extract_hugo_paper_urls, export_to_hugo
 from openai import OpenAI
 from tqdm import tqdm
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -46,6 +47,14 @@ class DailyRunResult:
     emailed: bool = False
     skipped: bool = False
     error: str | None = None
+
+
+@dataclass
+class SingleDayArtifacts:
+    result: DailyRunResult
+    papers: list[Paper]
+    overview_zh: str
+    overview_en: str
 
 
 def parse_executor_date(value: str, config_key: str) -> date:
@@ -200,6 +209,170 @@ class Executor:
         except Exception as email_exc:
             logger.warning(f"Failed to send error alert email: {email_exc}")
 
+    def _build_single_day_artifacts(self, corpus: list[CorpusPaper]) -> SingleDayArtifacts:
+        target_date = self.config.executor.get("target_date")
+        result = DailyRunResult(target_date=str(target_date) if target_date else None)
+        all_papers = []
+        self._set_retriever_full_text_mode(False)
+
+        for source, retriever in self.retrievers.items():
+            logger.info(f"Retrieving {source} papers...")
+            papers = retriever.retrieve_papers()
+            if len(papers) == 0:
+                logger.info(f"No {source} papers found")
+                continue
+            logger.info(f"Retrieved {len(papers)} {source} papers")
+            all_papers.extend(papers)
+
+        logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
+        result.retrieved_count = len(all_papers)
+
+        reranked_papers: list[Paper] = []
+        if len(all_papers) > 0:
+            logger.info("Reranking papers using title and abstract...")
+            reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
+            threshold = self.config.executor.get("score_threshold", 3.0)
+            reranked_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
+            reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
+
+            if len(reranked_papers) == 0:
+                logger.info(f"No papers met the score threshold of {threshold}.")
+            else:
+                logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
+
+            if len(reranked_papers) > 0:
+                logger.info("Fetching full text and generating summaries for final selected papers...")
+                self._enrich_selected_papers(reranked_papers)
+                for paper in tqdm(reranked_papers):
+                    paper.generate_tldr(self.openai_client, self.config.llm)
+                    paper.generate_english_tldr(self.openai_client, self.config.llm)
+                    paper.generate_affiliations(self.openai_client, self.config.llm)
+
+        result.selected_count = len(reranked_papers)
+
+        logger.info("Generating daily overview...")
+        overview_zh = ""
+        overview_en = ""
+        high_score_papers = [p for p in reranked_papers if p.score is not None and p.score >= 3.0]
+        if high_score_papers:
+            papers_info = []
+            for i, paper in enumerate(high_score_papers, 1):
+                affil = ", ".join(paper.affiliations) if paper.affiliations else "Unknown"
+                papers_info.append(
+                    f"[{i}] Title: {paper.title}\nAuthors: {', '.join(paper.authors)}\nAffiliations: {affil}\nSummary: {paper.tldr}"
+                )
+            papers_text = "\n\n".join(papers_info)
+
+            prompt_cfg = self.config.get("prompt", {})
+            topic = prompt_cfg.get("topic", "research")
+            role = prompt_cfg.get("role", "专业的学术编辑")
+            overview_template = prompt_cfg.get("overview_zh", "请总结以下论文: {topic}")
+            translation_prompt = prompt_cfg.get("translation_en", "Please translate:")
+
+            prompt_zh = overview_template.format(topic=topic) + f"\n\n{papers_text}"
+
+            try:
+                response = self.openai_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": role},
+                        {"role": "user", "content": prompt_zh},
+                    ],
+                    **self.config.llm.get("generation_kwargs", {}),
+                )
+                overview_zh = response.choices[0].message.content
+
+                prompt_en = f"{translation_prompt}\n\n{overview_zh}"
+                response_en = self.openai_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": "You are a professional translator for academic papers."},
+                        {"role": "user", "content": prompt_en},
+                    ],
+                    **self.config.llm.get("generation_kwargs", {}),
+                )
+                overview_en = response_en.choices[0].message.content
+            except Exception as exc:
+                logger.error(f"Failed to generate overview: {exc}")
+
+        return SingleDayArtifacts(
+            result=result,
+            papers=reranked_papers,
+            overview_zh=overview_zh,
+            overview_en=overview_en,
+        )
+
+    def _paper_urls(self, papers: list[Paper]) -> list[str]:
+        return [paper.url for paper in papers if paper.url]
+
+    def _correction_target_date(self) -> str:
+        return (datetime.now().date() - timedelta(days=1)).isoformat()
+
+    def _hugo_output_paths_for_target_date(self, target_date: str) -> tuple[str, str]:
+        if not hasattr(self.config, "hugo") or not self.config.hugo.get("output_dir"):
+            return "", ""
+
+        original_target_date = self.config.executor.get("target_date")
+        try:
+            self.config.executor.target_date = target_date
+            artifacts = build_hugo_export_artifacts([], self.config)
+            return artifacts.filepath_zh, artifacts.filepath_en
+        finally:
+            self.config.executor.target_date = original_target_date
+
+    def _read_hugo_urls(self, path: str) -> list[str]:
+        if not path or not os.path.exists(path):
+            return []
+        try:
+            return extract_hugo_paper_urls(Path(path).read_text(encoding="utf-8"))
+        except OSError as exc:
+            logger.warning(f"Failed to read Hugo output {path}: {exc}")
+            return []
+
+    def _hugo_output_urls_match(self, target_date: str, papers: list[Paper]) -> bool:
+        filepath_zh, filepath_en = self._hugo_output_paths_for_target_date(target_date)
+        if not filepath_zh or not filepath_en:
+            return False
+        if not os.path.exists(filepath_zh) or not os.path.exists(filepath_en):
+            return False
+
+        expected_urls = set(self._paper_urls(papers))
+        existing_zh = set(self._read_hugo_urls(filepath_zh))
+        existing_en = set(self._read_hugo_urls(filepath_en))
+        return expected_urls == existing_zh == existing_en
+
+    def _send_revision_email(self, target_date: str, papers: list[Paper]) -> None:
+        note = f"昨日修订：{target_date}"
+        logger.info(f"Sending revision email for {target_date}")
+        try:
+            email_content = render_email(papers, revision_note=note)
+            send_email(self.config, email_content, subject=f"arXiv Daily revision: {target_date}")
+        except Exception as exc:
+            logger.warning(f"Revision email failed for {target_date}; continuing without email: {exc}")
+
+    def _apply_previous_day_correction(self, corpus: list[CorpusPaper] | None = None) -> None:
+        if not hasattr(self.config, "hugo") or not self.config.hugo.get("output_dir"):
+            logger.info("Skipping previous-day correction because Hugo output is not configured.")
+            return
+
+        corpus = corpus or []
+        target_date = self._correction_target_date()
+        logger.info(f"Running previous-day correction for {target_date}")
+        original_target_date = self.config.executor.get("target_date")
+        try:
+            self.config.executor.target_date = target_date
+            artifacts = self._build_single_day_artifacts(corpus)
+            if self._hugo_output_urls_match(target_date, artifacts.papers):
+                logger.info(f"No Hugo correction needed for {target_date}: paper URLs already match.")
+                return
+
+            export_to_hugo(artifacts.papers, self.config, artifacts.overview_zh, artifacts.overview_en)
+            self._send_revision_email(target_date, artifacts.papers)
+            logger.info(f"Previous-day correction completed for {target_date}")
+        except Exception as exc:
+            self._send_error_email(stage="previous-day correction", exc=exc, target_date=target_date)
+            logger.exception(f"Previous-day correction failed for {target_date}")
+        finally:
+            self.config.executor.target_date = original_target_date
+
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
         zot = zotero.Zotero(self.config.zotero.user_id, 'user', self.config.zotero.api_key)
@@ -258,100 +431,31 @@ class Executor:
             raise
 
     def _run_single_day_impl(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
-        target_date = self.config.executor.get("target_date")
-        result = DailyRunResult(target_date=str(target_date) if target_date else None)
-        all_papers = []
-        self._set_retriever_full_text_mode(False)
-        for source, retriever in self.retrievers.items():
-            logger.info(f"Retrieving {source} papers...")
-            papers = retriever.retrieve_papers()
-            if len(papers) == 0:
-                logger.info(f"No {source} papers found")
-                continue
-            logger.info(f"Retrieved {len(papers)} {source} papers")
-            all_papers.extend(papers)
-        logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
-        result.retrieved_count = len(all_papers)
-        reranked_papers = []
-        if len(all_papers) > 0:
-            logger.info("Reranking papers using title and abstract...")
-            reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
-            threshold = self.config.executor.get("score_threshold", 3.0)
-            reranked_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
-            reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
-            
-            if len(reranked_papers) == 0:
-                logger.info(f"No papers met the score threshold of {threshold}.")
-                if not self.config.executor.send_empty:
-                    result.skipped = True
-                    return result
-            else:
-                logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
-
-            logger.info("Fetching full text and generating summaries for final selected papers...")
-            self._enrich_selected_papers(reranked_papers)
-            for p in tqdm(reranked_papers):
-                p.generate_tldr(self.openai_client, self.config.llm)
-                p.generate_english_tldr(self.openai_client, self.config.llm)
-                p.generate_affiliations(self.openai_client, self.config.llm)
-        elif not self.config.executor.send_empty:
+        artifacts = self._build_single_day_artifacts(corpus)
+        result = artifacts.result
+        if result.retrieved_count == 0 and not self.config.executor.send_empty:
             logger.info("No new papers found. No email will be sent.")
             result.skipped = True
             return result
 
-        result.selected_count = len(reranked_papers)
-            
-        logger.info("Generating daily overview...")
-        overview_zh = ""
-        overview_en = ""
-        high_score_papers = [p for p in reranked_papers if p.score is not None and p.score >= 3.0]
-        if high_score_papers:
-            papers_info = []
-            for i, p in enumerate(high_score_papers, 1):
-                affil = ', '.join(p.affiliations) if p.affiliations else 'Unknown'
-                papers_info.append(f"[{i}] Title: {p.title}\nAuthors: {', '.join(p.authors)}\nAffiliations: {affil}\nSummary: {p.tldr}")
-            papers_text = "\n\n".join(papers_info)
-            
-            prompt_cfg = self.config.get("prompt", {})
-            topic = prompt_cfg.get("topic", "research")
-            role = prompt_cfg.get("role", "专业的学术编辑")
-            overview_template = prompt_cfg.get("overview_zh", "请总结以下论文: {topic}")
-            translation_prompt = prompt_cfg.get("translation_en", "Please translate:")
-
-            prompt_zh = overview_template.format(topic=topic) + f"\n\n{papers_text}"
-            
-            try:
-                response = self.openai_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": role},
-                        {"role": "user", "content": prompt_zh}
-                    ],
-                    **self.config.llm.get('generation_kwargs', {})
-                )
-                overview_zh = response.choices[0].message.content
-                
-                prompt_en = f"{translation_prompt}\n\n{overview_zh}"
-                response_en = self.openai_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": "You are a professional translator for academic papers."},
-                        {"role": "user", "content": prompt_en}
-                    ],
-                    **self.config.llm.get('generation_kwargs', {})
-                )
-                overview_en = response_en.choices[0].message.content
-            except Exception as e:
-                logger.error(f"Failed to generate overview: {e}")
+        if result.retrieved_count > 0 and result.selected_count == 0 and not self.config.executor.send_empty:
+            logger.info("No papers met the score threshold. No email will be sent.")
+            result.skipped = True
+            return result
 
         if send_email_enabled:
             logger.info("Sending email...")
-            email_content = render_email(reranked_papers)
-            send_email(self.config, email_content)
-            result.emailed = True
-            logger.info("Email sent successfully")
+            try:
+                email_content = render_email(artifacts.papers)
+                send_email(self.config, email_content)
+                result.emailed = True
+                logger.info("Email sent successfully")
+            except Exception as exc:
+                logger.warning(f"Email failed; continuing without email: {exc}")
         else:
             logger.info("Skipping email for this run.")
 
-        export_to_hugo(reranked_papers, self.config, overview_zh, overview_en)
+        export_to_hugo(artifacts.papers, self.config, artifacts.overview_zh, artifacts.overview_en)
         result.exported = True
         return result
 
@@ -409,4 +513,6 @@ class Executor:
             logger.info(f"Running historical arXiv daily from {dates[0]} to {dates[-1]}")
             return self._run_date_range(dates, corpus)
 
-        return self._run_single_day(corpus, send_email_enabled=True)
+        result = self._run_single_day(corpus, send_email_enabled=True)
+        self._apply_previous_day_correction(corpus)
+        return result
