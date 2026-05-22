@@ -33,6 +33,26 @@ prompt:
   overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可。语言要求简洁、专业，以一整段话输出，不要分段、不要做自我介绍和项目介绍。例如： 好的，根据您提供的论文列表，今天的每日速览中，确实有直接关于 nickelate superconductors 领域的研究。同时，也有几篇虽然不直接以镍酸盐为研究对象，但其探讨的物理机制或研究方法与镍基超导领域当前的核心问题高度相关，值得重点关注。 以下是为今日推文准备的整体介绍： — 各位读者好，欢迎阅读今日的镍基超导领域论文速览。 今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。在[1]中，一项基于DFT+D……只要从“今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。”开始输出即可。"
   translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
 
+domain:
+  topic: "nickelate superconductors" # 领域判定主题；默认与 prompt.topic 保持一致。
+  use_ai: true # 是否启用 LLM 二次领域判定；关闭时 longlist 全部视为命中。
+  ai_confidence_threshold: 0.5 # LLM 判定为 accept 时进入规范化收录的最低置信度。
+  uncertain_policy: audit_only # uncertain 论文只写审计文件，不进入展示或知识库。
+  canonical_vocabulary_path: null # 可选 AKB 规范词表路径，用于辅助领域判定。
+
+capture:
+  enabled: true # 是否输出规范化 capture 数据包。
+  output_dir: data/capture # capture 根目录。
+  fulltext_dir: data/capture/fulltext # PDF/TXT/meta 输出目录。
+  save_pdf: true # accepted arXiv 论文保存 PDF。
+  save_full_text: true # accepted arXiv 论文保存 TXT；全文失败时用摘要兜底并在 meta 中记录。
+  save_meta: true # accepted arXiv 论文保存抓取/抽取审计记录。
+  save_rejected_candidates: true # rejected/uncertain 候选保存到审计 JSONL。
+  id_priority: ["arxiv", "doi", "title"] # 稳定编号优先级。
+
+display:
+  max_paper_num: null # 邮件和 Hugo 展示上限；为 null 时使用 executor.max_paper_num。
+
 reranker:
   local:
     model: jinaai/jina-embeddings-v5-text-nano # 本地 embedding 模型的 Hugging Face 名称。示例：jinaai/jina-embeddings-v5-text-nano

@@ -1017,25 +1017,68 @@ class ArxivRetriever(BaseRetriever):
         if paper.full_text:
             return paper
 
-        paper_id = extract_arxiv_id(paper.url)
+        paper_id = paper.arxiv_id or extract_arxiv_id(paper.url)
         cached_text = self._read_full_text_cache(paper_id)
         if cached_text:
             paper.full_text = cached_text
+            paper.full_text_source = "cache"
             return paper
+
+        capture_config = self.config.get("capture", {})
+        save_pdf_for_capture = get_config_bool(capture_config, "enabled", False) and get_config_bool(capture_config, "save_pdf", True)
+        if save_pdf_for_capture and paper.pdf_url and not getattr(paper, "pdf_bytes", None):
+            try:
+                paper.pdf_bytes = self._arxiv_get_bytes(
+                    paper.pdf_url,
+                    timeout=DOWNLOAD_TIMEOUT,
+                    cache_kind="pdf_download",
+                    paper_id=paper_id,
+                    cache_success=False,
+                )
+            except Exception as exc:
+                paper.full_text_errors["pdf_download"] = f"{type(exc).__name__}: {exc}"
+                self._write_full_text_failure("pdf_download", paper_id, exc)
 
         html_ref = SimpleNamespace(entry_id=paper.url, title=paper.title)
         pdf_ref = SimpleNamespace(pdf_url=paper.pdf_url, title=paper.title)
         tar_ref = SimpleNamespace(entry_id=paper.url, title=paper.title, source_url=lambda: f"https://arxiv.org/e-print/{extract_arxiv_id(paper.url)}")
 
         full_text = self.extract_text_from_html(html_ref)
+        if full_text:
+            paper.full_text_source = "html"
+        else:
+            paper.full_text_errors.setdefault("html", "HTML extraction failed.")
         if full_text is None:
-            full_text = self.extract_text_from_pdf(pdf_ref)
+            if getattr(paper, "pdf_bytes", None):
+                full_text = self._extract_text_from_pdf_bytes(paper.pdf_bytes, paper.title)
+            else:
+                full_text = self.extract_text_from_pdf(pdf_ref)
+            if full_text:
+                paper.full_text_source = "pdf"
+            else:
+                paper.full_text_errors.setdefault("pdf", "PDF extraction failed.")
         if full_text is None:
             full_text = self.extract_text_from_tar(tar_ref)
+            if full_text:
+                paper.full_text_source = "source"
+            else:
+                paper.full_text_errors.setdefault("source", "TeX source extraction failed.")
         if full_text:
             self._write_full_text_cache(paper_id, full_text)
         paper.full_text = full_text
         return paper
+
+    def _extract_text_from_pdf_bytes(self, content: bytes, title: str) -> str | None:
+        with TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "paper.pdf")
+            Path(path).write_bytes(content)
+            return _run_with_hard_timeout(
+                extract_markdown_from_pdf,
+                (path,),
+                timeout=PDF_EXTRACT_TIMEOUT,
+                operation="PDF extraction",
+                paper_title=title,
+            )
 
     def extract_text_from_html(self, paper: ArxivResult | RawArxivResult) -> str | None:
         paper_id = extract_arxiv_id(paper.entry_id)
@@ -1071,16 +1114,7 @@ class ArxivRetriever(BaseRetriever):
                 paper_id=paper_id,
                 cache_success=False,
             )
-            with TemporaryDirectory() as temp_dir:
-                path = os.path.join(temp_dir, "paper.pdf")
-                Path(path).write_bytes(content)
-                return _run_with_hard_timeout(
-                    extract_markdown_from_pdf,
-                    (path,),
-                    timeout=PDF_EXTRACT_TIMEOUT,
-                    operation="PDF extraction",
-                    paper_title=paper.title,
-                )
+            return self._extract_text_from_pdf_bytes(content, paper.title)
         except Exception as exc:
             self._write_full_text_failure("fulltext_pdf", paper_id, exc)
             logger.warning(f"PDF extraction failed for {paper.title}: {exc}")
@@ -1132,6 +1166,10 @@ class ArxivRetriever(BaseRetriever):
             pdf_url=pdf_url,
             full_text=None,
             published_at=parse_arxiv_datetime(getattr(raw_paper, "published", None)),
+            updated_at=parse_arxiv_datetime(getattr(raw_paper, "updated", None)),
+            arxiv_id=extract_arxiv_id(raw_paper.entry_id),
+            categories=list(getattr(raw_paper, "categories", []) or []),
+            primary_category=getattr(raw_paper, "primary_category", None),
         )
         if self.fetch_full_text_during_retrieval:
             self.populate_full_text(paper)

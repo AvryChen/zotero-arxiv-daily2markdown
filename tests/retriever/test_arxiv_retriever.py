@@ -159,6 +159,65 @@ def test_arxiv_convert_to_paper_skips_full_text_when_disabled(config, monkeypatc
     assert paper.full_text is None
 
 
+def test_arxiv_convert_to_paper_preserves_stable_metadata(config):
+    retriever = ArxivRetriever(config)
+    raw_paper = SimpleNamespace(
+        title="Paper",
+        authors=[SimpleNamespace(name="Author")],
+        summary="Abstract",
+        pdf_url="https://arxiv.org/pdf/2501.00001v1",
+        entry_id="https://arxiv.org/abs/2501.00001v1",
+        published="2025-01-01T00:00:00Z",
+        updated="2025-01-02T00:00:00Z",
+        categories=["cond-mat.supr-con", "cond-mat.str-el"],
+        primary_category="cond-mat.supr-con",
+        source_url=lambda: "https://arxiv.org/e-print/2501.00001v1",
+    )
+
+    paper = retriever.convert_to_paper(raw_paper)
+
+    assert paper.arxiv_id == "2501.00001v1"
+    assert paper.categories == ["cond-mat.supr-con", "cond-mat.str-el"]
+    assert paper.primary_category == "cond-mat.supr-con"
+    assert paper.published_at.isoformat() == "2025-01-01T00:00:00+00:00"
+    assert paper.updated_at.isoformat() == "2025-01-02T00:00:00+00:00"
+
+
+def test_populate_full_text_records_html_source_and_downloads_pdf_for_capture(config, monkeypatch):
+    with open_dict(config):
+        config.capture.enabled = True
+        config.capture.save_pdf = True
+        config.executor.arxiv_cache_enabled = False
+
+    retriever = ArxivRetriever(config)
+    paper = SimpleNamespace(
+        source="arxiv",
+        title="Paper",
+        arxiv_id="2605.00001v1",
+        url="https://arxiv.org/abs/2605.00001v1",
+        pdf_url="https://arxiv.org/pdf/2605.00001v1",
+        full_text=None,
+        full_text_source=None,
+        full_text_errors={},
+        pdf_bytes=None,
+    )
+    downloads = []
+
+    monkeypatch.setattr(retriever, "extract_text_from_html", lambda ref: "HTML text")
+    monkeypatch.setattr(
+        retriever,
+        "_arxiv_get_bytes",
+        lambda url, **kwargs: downloads.append(url) or b"%PDF capture",
+    )
+
+    retriever.populate_full_text(paper)
+
+    assert paper.full_text == "HTML text"
+    assert paper.full_text_source == "html"
+    assert paper.pdf_bytes == b"%PDF capture"
+    assert downloads == ["https://arxiv.org/pdf/2605.00001v1"]
+
+
 def test_arxiv_requests_share_scheduler_and_user_agent(config, monkeypatch):
     with open_dict(config):
         config.executor.arxiv_request_interval_seconds = 7

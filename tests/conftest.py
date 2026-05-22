@@ -46,6 +46,8 @@ def _base_config():
                 "executor.send_empty=false",
                 "executor.arxiv_cache_enabled=false",
                 "executor.historical_day_cooldown_seconds=0",
+                "domain.use_ai=false",
+                "capture.enabled=false",
             ],
         )
     return cfg

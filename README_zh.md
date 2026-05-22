@@ -2,7 +2,7 @@
 
 [English documentation](./README.md)
 
-Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你的 Zotero 文献库作为兴趣语料，先根据标题和摘要筛选相关论文，只对最终入选论文抓取全文，再调用兼容 OpenAI 的大模型生成摘要，最后导出邮件和 Hugo Markdown。
+Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你的 Zotero 文献库作为兴趣语料，先根据标题和摘要筛选相关论文，再执行可审计的领域命中判定，只对 accepted 论文做规范化收录和全文抓取，随后调用兼容 OpenAI 的大模型生成摘要，最后把邮件和 Hugo Markdown 作为展示层导出。
 
 本项目基于 [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily) 二次开发。当前版本重点强化了 arXiv 访问可靠性：全局请求限速、本地缓存、失败告警、历史回溯冷却，以及可选的 V2rayN 代理支持。
 
@@ -11,7 +11,9 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 从 arXiv RSS 或指定 arXiv 公告日期抓取论文。
 - 读取 Zotero 文献库，并可按收藏夹路径筛选兴趣语料。
 - 使用本地 SentenceTransformers 模型或 embedding API 做相关度排序。
-- 仅对最终入选论文抓全文，按 HTML、PDF、TeX source 顺序尝试。
+- 通过 longlist 和 LLM 领域判定，只让 accepted 领域论文进入收录和展示。
+- 仅对领域 accepted 论文抓全文，按 HTML、PDF、TeX source 顺序尝试。
+- 输出规范化 capture 数据包，包括 `papers.jsonl`、`domain_decisions.json`、rejected 审计记录、run report、TXT、PDF 和每篇论文的 meta JSON。
 - 通过兼容 Chat Completions 的 API 生成中英文摘要、作者机构和每日概览。
 - 导出 HTML 邮件摘要和中英文 Hugo 文章；邮件发送是 best-effort，失败不会阻塞 Hugo 导出。
 - 每次日常运行都会在下一次自动回看昨天的内容，并复用同一份 Zotero 兴趣语料排序；若历史 API 结果比当天推送多出或改动了论文，就覆盖昨天的 Hugo 输出。“昨日修订”邮件同样是 best-effort。
@@ -27,12 +29,13 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 3. 可选地用 `zotero.include_path` 和 `zotero.ignore_path` 筛选 Zotero 语料。
 4. 从 RSS 或目标公告日期窗口抓取 arXiv 候选论文。最新/RSS 模式直接使用 RSS 中的 metadata，不再额外调用 arXiv API 补查每篇论文。
 5. 只用标题和摘要对候选论文排序。
-6. 应用 `executor.score_threshold`，并用 `executor.max_paper_num` 限制最终入选数量。
-7. 仅对最终入选论文抓取全文。
-8. 生成 TL;DR、英文翻译、作者机构和每日概览。
-9. 按配置尝试发送邮件；如果 SMTP 超时、登录失败或发送失败，只记录 warning 并继续。
-10. 在设置 `hugo.output_dir` 时导出 Hugo Markdown。
-11. 下一次日常运行会再用历史 API 回看昨天的文章，并使用同一份 Zotero 语料排序；若论文集合有差异则自动修正昨天的输出。
+6. 应用 `executor.score_threshold` 和 `executor.longlist` 形成轻量 longlist。
+7. 根据 `domain.topic` 对 longlist 做领域判定；accepted 论文进入 capture，rejected/uncertain 论文进入审计文件。
+8. 仅对 accepted 论文抓全文，并保存规范化 capture 产物。
+9. 为 accepted 论文生成 TL;DR、英文翻译、作者机构和每日概览。
+10. 按配置尝试发送邮件；如果 SMTP 超时、登录失败或发送失败，只记录 warning 并继续。
+11. 在设置 `hugo.output_dir` 时导出 Hugo Markdown。Markdown 是展示层；机器事实源是 capture JSONL。
+12. 下一次日常运行会再用历史 API 回看昨天的文章，并使用同一份 Zotero 语料排序；若论文集合有差异则自动修正昨天的 capture/Hugo 输出。
 
 ## arXiv 访问策略
 
@@ -43,7 +46,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 默认 arXiv 请求间隔是 `5` 秒。
 - 遇到 429、403、5xx、超时和连接失败会指数退避并冷却。
 - 历史回溯默认每处理一天后等待 `600` 秒。
-- 不再给每个候选论文下载全文，只对最终入选论文抓取。
+- 不再给每个候选论文下载全文，只对领域 accepted 论文抓取。
 - 已缓存的 arXiv 响应会被复用。
 - 最新/RSS 模式不会再访问 arXiv API metadata 端点；指定日期和历史回溯仍会使用 `export.arxiv.org/api/query`。
 
@@ -109,7 +112,21 @@ executor:
   source: ["arxiv"]
   reranker: local
   max_paper_num: 20
+  longlist: 80
   score_threshold: 3.0
+
+domain:
+  topic: "nickelate superconductors"
+  use_ai: true
+  ai_confidence_threshold: 0.5
+
+capture:
+  enabled: true
+  output_dir: data/capture
+  fulltext_dir: data/capture/fulltext
+
+display:
+  max_paper_num: 20
 
 llm:
   api:
@@ -132,8 +149,14 @@ hugo:
 | `zotero.include_path` | 只使用收藏夹路径匹配这些 glob 规则的 Zotero 文献。 |
 | `zotero.ignore_path` | 排除收藏夹路径匹配这些 glob 规则的 Zotero 文献。 |
 | `executor.reranker` | `local` 使用 SentenceTransformers，`api` 使用 embedding API。 |
-| `executor.max_paper_num` | 邮件和 Hugo 输出中的最大论文数。 |
-| `executor.score_threshold` | 最终入选所需的最低相关度分数。 |
+| `executor.max_paper_num` | 兼容旧配置；未设置 `display.max_paper_num` 时作为展示上限。 |
+| `executor.longlist` | 通过分数预筛后送入领域判定的最大候选数。 |
+| `executor.score_threshold` | 进入领域判定 longlist 的最低相关度分数。 |
+| `domain.topic`, `domain.use_ai` | 领域判定主题，以及是否启用 LLM 判定。 |
+| `domain.ai_confidence_threshold` | LLM accept 论文进入收录的最低置信度。 |
+| `capture.enabled`, `capture.output_dir` | 是否输出规范化 capture 数据包及其根目录。 |
+| `capture.fulltext_dir` | accepted 论文 TXT/PDF/meta 的输出目录。 |
+| `display.max_paper_num` | 邮件和 Hugo 展示的 accepted 论文上限，不限制底层 capture 收录。 |
 | `executor.target_date` | 运行单个 arXiv 公告日期，格式为 `YYYY-MM-DD`。 |
 | `executor.start_date`, `executor.end_date` | 按闭区间回溯历史日期。 |
 | `executor.historical_mode` | 历史回溯模式：`export_only` 或 `email_and_export`。 |
@@ -211,6 +234,27 @@ uv run python src/zotero_arxiv_daily2markdown/main.py
 uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
 ```
 
+按正式流程回跑单日，不开启 debug，也不因为 Hugo 文件已存在而跳过：
+
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.debug=false \
+  executor.start_date="2026-05-19" \
+  executor.end_date="2026-05-19" \
+  executor.skip_existing=false
+```
+
+即使环境变量里配置了代理，也强制直连运行：
+
+```bash
+env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY -u all_proxy -u https_proxy -u http_proxy \
+  uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.debug=false \
+  executor.start_date="2026-05-19" \
+  executor.end_date="2026-05-19" \
+  executor.skip_existing=false
+```
+
 回溯一个日期区间，只导出 Hugo 文件：
 
 ```bash
@@ -258,6 +302,23 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
 ## 输出
 
 邮件输出是 HTML digest，包含论文标题、作者、机构、相关度分数、摘要和 PDF 链接。邮件只作为通知层：SMTP 超时、登录失败或发送失败会被记录并跳过，不会阻止 Hugo 导出或历史回溯继续。
+
+启用 `capture.enabled` 后，会写入：
+
+```text
+data/capture/
+  papers.jsonl
+  domain_decisions.json
+  rejected_candidates.jsonl
+  runs/YYYY-MM-DD.json
+  fulltext/arxiv/<arxiv_id>.txt
+  fulltext/arxiv/<arxiv_id>.pdf
+  fulltext/arxiv/<arxiv_id>.meta.json
+```
+
+`papers.jsonl` 只包含领域 accepted 论文。`domain_decisions.json` 和 `rejected_candidates.jsonl` 会保留 accepted、rejected、uncertain 以及判定失败的审计记录。下游知识库构建应直接读取 capture 文件，而不是从 Hugo Markdown 反向解析。
+
+在默认配置下，accepted 论文全文会保存到 `data/capture/fulltext/arxiv/`，每篇论文对应 `<arxiv_id>.txt`、`<arxiv_id>.pdf` 和 `<arxiv_id>.meta.json`。如果 accepted 论文只有 PDF 产物，exporter 会先从 PDF 抽取文本写入对应 TXT 文件，再考虑摘要兜底。如果某次运行没有论文通过领域判定，会写 run report，但不会为该日期新增全文文件。
 
 配置 `hugo.output_dir` 后，会写入：
 
@@ -318,6 +379,8 @@ src/zotero_arxiv_daily2markdown/
   main.py                  Hydra 入口
   executor.py              端到端流程编排
   protocol.py              Paper 与 Zotero 语料数据模型
+  domain_classifier.py     longlist 领域判定逻辑
+  capture_exporter.py      规范化 capture JSON/TXT/PDF 导出
   retriever/               arXiv 抓取、缓存、代理与完整性校验
   reranker/                本地与 API embedding 重排序
   construct_email.py       HTML 邮件渲染

@@ -7,7 +7,7 @@ import time
 import traceback
 from .utils import glob_match, to_bool
 from .retriever import get_retriever_cls
-from .protocol import CorpusPaper, Paper
+from .protocol import CorpusPaper, DomainDecision, Paper
 import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -15,6 +15,8 @@ from .reranker import get_reranker_cls
 from .construct_email import render_email
 from .utils import send_email
 from .hugo_exporter import build_hugo_export_artifacts, extract_hugo_paper_urls, export_to_hugo
+from .capture_exporter import export_capture_artifacts
+from .domain_classifier import classify_domain_papers
 from openai import OpenAI
 from tqdm import tqdm
 import math
@@ -43,6 +45,12 @@ class DailyRunResult:
     target_date: str | None
     retrieved_count: int = 0
     selected_count: int = 0
+    longlisted_count: int = 0
+    accepted_count: int = 0
+    rejected_count: int = 0
+    uncertain_count: int = 0
+    displayed_count: int = 0
+    captured_count: int = 0
     exported: bool = False
     emailed: bool = False
     skipped: bool = False
@@ -55,6 +63,9 @@ class SingleDayArtifacts:
     papers: list[Paper]
     overview_zh: str
     overview_en: str
+    accepted_papers: list[Paper] | None = None
+    candidate_papers: list[Paper] | None = None
+    domain_decisions: list[DomainDecision] | None = None
 
 
 def parse_executor_date(value: str, config_key: str) -> date:
@@ -134,6 +145,20 @@ class Executor:
         if configured_longlist is None:
             return max(max_paper_num, math.ceil(max_paper_num * 1.5))
         return max(max_paper_num, int(configured_longlist))
+
+    def _resolve_display_limit(self) -> int:
+        display_config = self.config.get("display", {})
+        configured_limit = display_config.get("max_paper_num")
+        if configured_limit is None:
+            return int(self.config.executor.max_paper_num)
+        return max(0, int(configured_limit))
+
+    def _capture_enabled(self) -> bool:
+        return to_bool(self.config.get("capture", {}).get("enabled", False))
+
+    def _run_date_for_outputs(self) -> str:
+        target_date = self.config.executor.get("target_date")
+        return str(target_date) if target_date else datetime.now().date().isoformat()
 
     def _get_date_range(self) -> list[str] | None:
         start_date = self.config.executor.get("start_date")
@@ -227,33 +252,66 @@ class Executor:
         logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
         result.retrieved_count = len(all_papers)
 
-        reranked_papers: list[Paper] = []
+        accepted_papers: list[Paper] = []
+        longlist_papers: list[Paper] = []
+        domain_decisions: list[DomainDecision] = []
         if len(all_papers) > 0:
             logger.info("Reranking papers using title and abstract...")
             reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
             threshold = self.config.executor.get("score_threshold", 3.0)
-            reranked_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
-            reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
+            threshold_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
+            longlist_papers = threshold_papers[:self._resolve_longlist_size()]
+            result.longlisted_count = len(longlist_papers)
 
-            if len(reranked_papers) == 0:
+            if len(longlist_papers) == 0:
                 logger.info(f"No papers met the score threshold of {threshold}.")
             else:
-                logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
+                logger.info(f"Longlisted {len(longlist_papers)} papers above threshold {threshold}")
+                domain_decisions = classify_domain_papers(longlist_papers, self.config, self.openai_client)
+                accepted_papers = [
+                    paper
+                    for paper in longlist_papers
+                    if paper.domain_decision is not None and paper.domain_decision.accepted
+                ]
 
-            if len(reranked_papers) > 0:
-                logger.info("Fetching full text and generating summaries for final selected papers...")
-                self._enrich_selected_papers(reranked_papers)
-                for paper in tqdm(reranked_papers):
+            if len(accepted_papers) > 0:
+                logger.info("Fetching full text and generating summaries for accepted papers...")
+                self._enrich_selected_papers(accepted_papers)
+                for paper in tqdm(accepted_papers):
                     paper.generate_tldr(self.openai_client, self.config.llm)
                     paper.generate_english_tldr(self.openai_client, self.config.llm)
                     paper.generate_affiliations(self.openai_client, self.config.llm)
 
-        result.selected_count = len(reranked_papers)
+        display_limit = self._resolve_display_limit()
+        display_papers = accepted_papers[:display_limit]
+        result.selected_count = len(accepted_papers)
+        result.accepted_count = len(accepted_papers)
+        result.rejected_count = sum(1 for decision in domain_decisions if decision.decision == "reject")
+        result.uncertain_count = sum(1 for decision in domain_decisions if decision.decision == "uncertain")
+        result.displayed_count = len(display_papers)
+
+        if self._capture_enabled():
+            capture_result = export_capture_artifacts(
+                accepted_papers=accepted_papers,
+                candidate_papers=longlist_papers,
+                domain_decisions=domain_decisions,
+                config=self.config,
+                run_date=self._run_date_for_outputs(),
+                report={
+                    "retrieved_count": result.retrieved_count,
+                    "longlisted_count": result.longlisted_count,
+                    "accepted_count": result.accepted_count,
+                    "rejected_count": result.rejected_count,
+                    "uncertain_count": result.uncertain_count,
+                    "displayed_count": result.displayed_count,
+                },
+            )
+            result.captured_count = capture_result.captured_count
 
         logger.info("Generating daily overview...")
         overview_zh = ""
         overview_en = ""
-        high_score_papers = [p for p in reranked_papers if p.score is not None and p.score >= 3.0]
+        high_score_papers = [p for p in display_papers if p.score is not None and p.score >= 3.0]
         if high_score_papers:
             papers_info = []
             for i, paper in enumerate(high_score_papers, 1):
@@ -295,9 +353,12 @@ class Executor:
 
         return SingleDayArtifacts(
             result=result,
-            papers=reranked_papers,
+            papers=display_papers,
             overview_zh=overview_zh,
             overview_en=overview_en,
+            accepted_papers=accepted_papers,
+            candidate_papers=longlist_papers,
+            domain_decisions=domain_decisions,
         )
 
     def _paper_urls(self, papers: list[Paper]) -> list[str]:

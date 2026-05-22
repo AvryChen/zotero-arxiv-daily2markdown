@@ -2,7 +2,7 @@
 
 [Chinese documentation](./README_zh.md)
 
-Zotero arXiv Daily to Markdown builds a daily research digest from arXiv papers. It uses your Zotero library as the relevance profile, ranks new papers by title and abstract, fetches full text only for the final selected papers, summarizes them with an OpenAI-compatible LLM, then exports email and Hugo Markdown.
+Zotero arXiv Daily to Markdown builds a daily research digest from arXiv papers. It uses your Zotero library as the relevance profile, ranks new papers by title and abstract, applies an auditable domain decision step, captures accepted papers into machine-readable JSON/TXT/PDF artifacts, summarizes them with an OpenAI-compatible LLM, then exports email and Hugo Markdown as display outputs.
 
 This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily). The current version focuses on reliable arXiv access: global request throttling, cache reuse, failure alerts, historical backfill cooldowns, and optional V2rayN-compatible proxy support.
 
@@ -11,7 +11,9 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 - Fetch papers from arXiv RSS feeds or from an explicit arXiv announcement date.
 - Build a relevance profile from Zotero papers, with optional collection-path filtering.
 - Rank papers with either a local SentenceTransformers model or an embedding API.
-- Fetch full text only after final selection, trying HTML, PDF, then TeX source.
+- Use a longlist plus LLM domain classification so only accepted domain papers enter capture and display outputs.
+- Fetch full text only after domain acceptance, trying HTML, PDF, then TeX source.
+- Write a normalized capture package with `papers.jsonl`, `domain_decisions.json`, rejected-candidate audit records, run reports, TXT, PDF, and per-paper meta JSON.
 - Generate Chinese/English summaries, affiliations, and a daily overview through a Chat Completions-compatible API.
 - Export an HTML email digest and bilingual Hugo posts; email delivery is best-effort and will not block Hugo export.
 - Automatically re-check the previous day's post on the next daily run using the same Zotero relevance corpus, then overwrite yesterday's Hugo output if the historical API result adds or changes papers. Revision email delivery is also best-effort.
@@ -27,12 +29,13 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 3. Optionally filter the Zotero corpus with `zotero.include_path` and `zotero.ignore_path`.
 4. Fetch arXiv candidates from RSS or from a target announcement date window. Latest/RSS mode uses RSS metadata directly and does not call the arXiv API again for per-paper metadata.
 5. Rank candidates using title and abstract only.
-6. Apply `executor.score_threshold` and cap final selections by `executor.max_paper_num`.
-7. Fetch full text only for those final selected papers.
-8. Generate TL;DRs, English translations, affiliations, and a daily overview.
-9. Try to send email when enabled; SMTP failures are logged and skipped so Hugo export can continue.
-10. Export Hugo Markdown when `hugo.output_dir` is configured.
-11. On the next daily run, re-run the previous day through the historical API path with the same Zotero corpus and correct the previous post if its paper set differs.
+6. Apply `executor.score_threshold` and `executor.longlist` to form a lightweight longlist.
+7. Classify longlisted papers against `domain.topic`; accepted papers are captured, while rejected and uncertain papers are kept in audit files.
+8. Fetch full text only for accepted papers, then save normalized capture artifacts.
+9. Generate TL;DRs, English translations, affiliations, and a daily overview for accepted papers.
+10. Try to send email when enabled; SMTP failures are logged and skipped so Hugo export can continue.
+11. Export Hugo Markdown when `hugo.output_dir` is configured. Markdown is a display layer; capture JSONL is the machine-readable fact source.
+12. On the next daily run, re-run the previous day through the historical API path with the same Zotero corpus and correct yesterday's capture/Hugo outputs if the paper set differs.
 
 ## arXiv Access Policy
 
@@ -43,7 +46,7 @@ The project intentionally avoids aggressive crawling:
 - The default arXiv request interval is `5` seconds.
 - 429, 403, 5xx, timeout, and connection failures use exponential backoff and cooldowns.
 - Historical backfill waits `600` seconds between processed dates by default.
-- Full text is not downloaded for every candidate, only for final selected papers.
+- Full text is not downloaded for every candidate, only for domain-accepted papers.
 - Cached arXiv responses are reused when available.
 - Latest/RSS runs avoid the arXiv API metadata endpoint; date-based runs still use `export.arxiv.org/api/query`.
 
@@ -109,7 +112,21 @@ executor:
   source: ["arxiv"]
   reranker: local
   max_paper_num: 20
+  longlist: 80
   score_threshold: 3.0
+
+domain:
+  topic: "nickelate superconductors"
+  use_ai: true
+  ai_confidence_threshold: 0.5
+
+capture:
+  enabled: true
+  output_dir: data/capture
+  fulltext_dir: data/capture/fulltext
+
+display:
+  max_paper_num: 20
 
 llm:
   api:
@@ -132,8 +149,14 @@ hugo:
 | `zotero.include_path` | Only use Zotero papers whose collection path matches one of these glob patterns. |
 | `zotero.ignore_path` | Exclude Zotero papers whose collection path matches one of these glob patterns. |
 | `executor.reranker` | `local` for SentenceTransformers or `api` for embedding API reranking. |
-| `executor.max_paper_num` | Maximum papers shown in email and Hugo output. |
-| `executor.score_threshold` | Minimum relevance score required for final selection. |
+| `executor.max_paper_num` | Backward-compatible display limit when `display.max_paper_num` is unset. |
+| `executor.longlist` | Maximum candidates sent to domain classification after score filtering. |
+| `executor.score_threshold` | Minimum relevance score required to enter the domain-classification longlist. |
+| `domain.topic`, `domain.use_ai` | Domain topic and toggle for LLM-based acceptance. |
+| `domain.ai_confidence_threshold` | Minimum LLM confidence for accepted papers. |
+| `capture.enabled`, `capture.output_dir` | Enable normalized capture output and choose its root directory. |
+| `capture.fulltext_dir` | Directory for accepted-paper TXT/PDF/meta artifacts. |
+| `display.max_paper_num` | Maximum accepted papers shown in email and Hugo output; does not limit capture. |
 | `executor.target_date` | Run one arXiv announcement date in `YYYY-MM-DD` format. |
 | `executor.start_date`, `executor.end_date` | Backfill a date range, inclusive. |
 | `executor.historical_mode` | `export_only` or `email_and_export` for historical runs. |
@@ -211,6 +234,27 @@ One arXiv announcement date:
 uv run python src/zotero_arxiv_daily2markdown/main.py executor.target_date="2026-05-01"
 ```
 
+Production-style single-day backfill, without debug mode and without skipping an existing Hugo post:
+
+```bash
+uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.debug=false \
+  executor.start_date="2026-05-19" \
+  executor.end_date="2026-05-19" \
+  executor.skip_existing=false
+```
+
+Force a direct, no-proxy run even when proxy environment variables are set:
+
+```bash
+env -u ALL_PROXY -u HTTPS_PROXY -u HTTP_PROXY -u all_proxy -u https_proxy -u http_proxy \
+  uv run python src/zotero_arxiv_daily2markdown/main.py \
+  executor.debug=false \
+  executor.start_date="2026-05-19" \
+  executor.end_date="2026-05-19" \
+  executor.skip_existing=false
+```
+
 Historical backfill, Hugo export only:
 
 ```bash
@@ -258,6 +302,23 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
 ## Output
 
 Email output is an HTML digest with paper titles, authors, affiliations, relevance scores, summaries, and PDF links. Email is treated as notification only: SMTP timeout, login, or send failures are logged and do not stop Hugo export or historical backfill.
+
+When `capture.enabled` is true, the capture exporter writes:
+
+```text
+data/capture/
+  papers.jsonl
+  domain_decisions.json
+  rejected_candidates.jsonl
+  runs/YYYY-MM-DD.json
+  fulltext/arxiv/<arxiv_id>.txt
+  fulltext/arxiv/<arxiv_id>.pdf
+  fulltext/arxiv/<arxiv_id>.meta.json
+```
+
+`papers.jsonl` contains only accepted domain papers. `domain_decisions.json` and `rejected_candidates.jsonl` keep the audit trail for accepted, rejected, uncertain, and failed classification results. Downstream knowledge-base tooling should read capture files directly instead of parsing Hugo Markdown.
+
+For the default configuration, accepted-paper full text is saved under `data/capture/fulltext/arxiv/` as `<arxiv_id>.txt`, `<arxiv_id>.pdf`, and `<arxiv_id>.meta.json`. If an accepted paper only has a PDF artifact, the exporter extracts the PDF into the corresponding TXT file before falling back to the abstract. If no paper is accepted for a run, the run report is still written but no full-text files are created for that date.
 
 When `hugo.output_dir` is set, the exporter writes:
 
@@ -318,6 +379,8 @@ src/zotero_arxiv_daily2markdown/
   main.py                  Hydra entry point
   executor.py              End-to-end orchestration
   protocol.py              Paper and corpus data models
+  domain_classifier.py     Longlist domain decision logic
+  capture_exporter.py      Normalized capture JSON/TXT/PDF exporter
   retriever/               arXiv retrieval, cache, proxy, and integrity checks
   reranker/                Local and API embedding rerankers
   construct_email.py       HTML email rendering

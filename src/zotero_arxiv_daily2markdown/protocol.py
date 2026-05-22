@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, TypeVar
 from datetime import datetime
 import re
@@ -7,6 +7,29 @@ from openai import OpenAI
 from loguru import logger
 import json
 RawPaperItem = TypeVar('RawPaperItem')
+
+@dataclass
+class DomainDecision:
+    paper_id: str
+    is_in_domain: bool
+    confidence: float = 0.0
+    decision: str = "uncertain"
+    reason: str = ""
+    matched_concepts: list[str] = field(default_factory=list)
+    negative_evidence: list[str] = field(default_factory=list)
+    accepted: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "paper_id": self.paper_id,
+            "is_in_domain": self.is_in_domain,
+            "confidence": self.confidence,
+            "decision": self.decision,
+            "reason": self.reason,
+            "matched_concepts": self.matched_concepts,
+            "negative_evidence": self.negative_evidence,
+            "accepted": self.accepted,
+        }
 
 @dataclass
 class Paper:
@@ -22,6 +45,19 @@ class Paper:
     affiliations: Optional[list[str]] = None
     score: Optional[float] = None
     published_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    arxiv_id: Optional[str] = None
+    doi: Optional[str] = None
+    categories: list[str] = field(default_factory=list)
+    primary_category: Optional[str] = None
+    domain_decision: Optional[DomainDecision] = None
+    full_text_path: Optional[str] = None
+    pdf_path: Optional[str] = None
+    text_sha256: Optional[str] = None
+    pdf_sha256: Optional[str] = None
+    full_text_source: Optional[str] = None
+    full_text_errors: dict[str, str] = field(default_factory=dict)
+    pdf_bytes: Optional[bytes] = field(default=None, repr=False)
 
     def ranking_text(
         self,

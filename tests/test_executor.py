@@ -333,7 +333,7 @@ def test_run_no_papers_send_empty_true(config, monkeypatch):
     assert "text/html" in body
 
 
-def test_run_fetches_full_text_only_after_final_selection(config, monkeypatch):
+def test_run_fetches_full_text_only_after_domain_accepted_longlist(config, monkeypatch):
     from omegaconf import open_dict
 
     from tests.canned_responses import make_sample_paper, make_stub_openai_client, make_stub_zotero_client
@@ -443,10 +443,79 @@ def test_run_fetches_full_text_only_after_final_selection(config, monkeypatch):
     assert rerank_calls[0][4] == ["Paper A", "Paper B", "Paper C"]
     assert rerank_calls[0][5] == [None, None, None]
     assert len(rerank_calls) == 1
-    assert enriched == ["Paper A", "Paper B"]
-    assert sorted(tldr_calls) == ["Paper A", "Paper B"]
-    assert sorted(tldr_en_calls) == ["Paper A", "Paper B"]
-    assert affiliation_calls == ["Paper A", "Paper B"]
+    assert enriched == ["Paper A", "Paper B", "Paper C"]
+    assert sorted(tldr_calls) == ["Paper A", "Paper B", "Paper C"]
+    assert sorted(tldr_en_calls) == ["Paper A", "Paper B", "Paper C"]
+    assert affiliation_calls == ["Paper A", "Paper B", "Paper C"]
+
+
+def test_build_single_day_captures_all_accepted_but_displays_top_limit(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.max_paper_num = 2
+        config.executor.longlist = 3
+        config.executor.score_threshold = 0.0
+        config.domain.use_ai = False
+        config.capture.enabled = True
+        config.capture.output_dir = str(tmp_path / "capture")
+        config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
+        config.display.max_paper_num = 2
+
+    retrieved = [
+        make_sample_paper(title="Paper A", arxiv_id="2605.00001v1", full_text=None),
+        make_sample_paper(title="Paper B", arxiv_id="2605.00002v1", full_text=None),
+        make_sample_paper(title="Paper C", arxiv_id="2605.00003v1", full_text=None),
+        make_sample_paper(title="Paper D", arxiv_id="2605.00004v1", full_text=None),
+    ]
+
+    class StubRetriever:
+        fetch_full_text_during_retrieval = False
+
+        def retrieve_papers(self):
+            return retrieved
+
+        def populate_full_text(self, paper):
+            paper.full_text = f"FULL {paper.title}"
+            paper.full_text_source = "html"
+            return paper
+
+    class StubReranker:
+        def rerank(self, candidates, corpus, *, include_full_text=True, **kwargs):
+            scores = {"Paper A": 9.0, "Paper B": 8.0, "Paper C": 7.0, "Paper D": 6.0}
+            for paper in candidates:
+                paper.score = scores[paper.title]
+            return sorted(candidates, key=lambda paper: paper.score, reverse=True)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.retrievers = {"arxiv": StubRetriever()}
+    executor.reranker = StubReranker()
+    executor.openai_client = object()
+
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.protocol.Paper.generate_tldr",
+        lambda self, client, params: setattr(self, "tldr", f"ZH {self.title}") or self.tldr,
+    )
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.protocol.Paper.generate_english_tldr",
+        lambda self, client, params: setattr(self, "tldr_en", f"EN {self.title}") or self.tldr_en,
+    )
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.protocol.Paper.generate_affiliations",
+        lambda self, client, params: setattr(self, "affiliations", [self.title]) or self.affiliations,
+    )
+
+    artifacts = executor._build_single_day_artifacts([])
+
+    records = (tmp_path / "capture" / "papers.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [paper.title for paper in artifacts.accepted_papers] == ["Paper A", "Paper B", "Paper C"]
+    assert [paper.title for paper in artifacts.papers] == ["Paper A", "Paper B"]
+    assert artifacts.result.accepted_count == 3
+    assert artifacts.result.displayed_count == 2
+    assert len(records) == 3
 
 
 def test_executor_defaults_longlist_to_one_point_five_x_max(config):

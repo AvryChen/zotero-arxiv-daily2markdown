@@ -16,4 +16,6 @@ logs
 models
 test-compose.yml
 outputs
+data/
+.DS_Store
 config/private.yaml
