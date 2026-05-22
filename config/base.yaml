@@ -68,7 +68,7 @@ reranker:
 
 executor:
   debug: true # 是否启用调试模式。示例：true
-  send_empty: true # 当当天没有新论文时，是否仍发送空邮件。示例：true
+  send_empty: false # 当当天没有新论文或没有论文通过筛选时，是否仍发送空邮件/空日报。示例：false
   max_paper_num: 20 # 邮件和页面中展示的最大论文数量。示例：100
   longlist: null # 第二轮抓取全文和精排的候选数量；为 null 时默认取 max_paper_num 的 1.5 倍并向上取整。
   llm_concurrency: 5 # longlist 阶段生成双语 TL;DR 时的并发数；设为 1 表示顺序执行。
