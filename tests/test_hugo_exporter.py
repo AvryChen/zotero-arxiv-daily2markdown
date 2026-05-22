@@ -3,7 +3,14 @@
 from datetime import datetime, timezone
 
 from tests.canned_responses import make_sample_paper
-from zotero_arxiv_daily2markdown.hugo_exporter import _render_post_markdown, extract_hugo_paper_urls
+from omegaconf import OmegaConf
+
+from zotero_arxiv_daily2markdown.hugo_exporter import (
+    cleanup_empty_hugo_notices,
+    export_empty_notice_to_hugo,
+    _render_post_markdown,
+    extract_hugo_paper_urls,
+)
 
 
 def test_render_post_markdown_includes_publication_window_zh():
@@ -101,3 +108,35 @@ def test_extract_hugo_paper_urls_parses_link_lines():
         "https://arxiv.org/abs/2605.00001v1",
         "https://arxiv.org/abs/2605.00002v1",
     ]
+
+
+def test_export_empty_notice_and_cleanup_only_marked_posts(tmp_path):
+    config = OmegaConf.create(
+        {
+            "executor": {"target_date": "2026-05-21"},
+            "prompt": {"topic": "nickelate superconductors"},
+            "hugo": {"output_dir": str(tmp_path), "auto_push": False},
+        }
+    )
+    normal_post = tmp_path / "zh" / "posts" / "2026-05-20-arxiv-daily.md"
+    normal_post.parent.mkdir(parents=True, exist_ok=True)
+    normal_post.write_text("---\ntitle: normal\n---\n\n## 1. Paper\n", encoding="utf-8")
+
+    artifacts = export_empty_notice_to_hugo(config)
+
+    zh_text = (tmp_path / "zh" / "posts" / "2026-05-21-arxiv-daily.md").read_text(encoding="utf-8")
+    en_text = (tmp_path / "en" / "posts" / "2026-05-21-arxiv-daily.md").read_text(encoding="utf-8")
+    assert artifacts.date_str == "2026-05-21"
+    assert "arxiv_empty_notice: true" in zh_text
+    assert "昨天没有新论文" in zh_text
+    assert "No new papers yesterday" in en_text
+
+    removed = cleanup_empty_hugo_notices(config)
+
+    assert sorted(path.name for path in removed) == [
+        "2026-05-21-arxiv-daily.md",
+        "2026-05-21-arxiv-daily.md",
+    ]
+    assert not (tmp_path / "zh" / "posts" / "2026-05-21-arxiv-daily.md").exists()
+    assert not (tmp_path / "en" / "posts" / "2026-05-21-arxiv-daily.md").exists()
+    assert normal_post.exists()

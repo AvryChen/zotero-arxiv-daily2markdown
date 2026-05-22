@@ -8,7 +8,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 
 ## 功能
 
-- 从 arXiv RSS 或指定 arXiv 公告日期抓取论文。
+- 从指定 arXiv 公告日期抓取论文；默认定时运行会处理昨天的公告日期，并走和手动 target-date 相同的路径。
 - 读取 Zotero 文献库，并可按收藏夹路径筛选兴趣语料。
 - 使用本地 SentenceTransformers 模型或 embedding API 做相关度排序。
 - 通过 longlist 和 LLM 领域判定，只让 accepted 领域论文进入收录和展示。
@@ -16,7 +16,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 输出规范化 capture 数据包，包括 `papers.jsonl`、`domain_decisions.json`、rejected 审计记录、run report、TXT、PDF 和每篇论文的 meta JSON。
 - 通过兼容 Chat Completions 的 API 生成中英文摘要、作者机构和每日概览。
 - 导出 HTML 邮件摘要和中英文 Hugo 文章；邮件发送是 best-effort，失败不会阻塞 Hugo 导出。
-- 每次日常运行都会在下一次自动回看昨天的内容，并复用同一份 Zotero 兴趣语料排序；若历史 API 结果比当天推送多出或改动了论文，就覆盖昨天的 Hugo 输出。“昨日修订”邮件同样是 best-effort。
+- 每次默认定时运行前，自动清理旧的“昨天没有新论文”Hugo 提示页。
 - 支持历史日期区间回溯、跳过已存在输出、失败后继续、日期间冷却。
 - 可只让 arXiv 请求走 HTTP/SOCKS 代理，例如 V2rayN。
 - 将 arXiv RSS/API/全文响应缓存到 `outputs/cache/arxiv`。
@@ -27,7 +27,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 1. 加载 `config/default.yaml`，它会合并 `config/base.yaml` 和 `config/custom.yaml`。
 2. 读取 Zotero 中的 `conferencePaper`、`journalArticle`、`preprint` 条目，并忽略没有摘要的条目。
 3. 可选地用 `zotero.include_path` 和 `zotero.ignore_path` 筛选 Zotero 语料。
-4. 从 RSS 或目标公告日期窗口抓取 arXiv 候选论文。最新/RSS 模式直接使用 RSS 中的 metadata，不再额外调用 arXiv API 补查每篇论文。
+4. 从目标公告日期窗口抓取 arXiv 候选论文。没有显式配置日期时，CLI 会临时把 `executor.target_date` 设为昨天，因此默认定时路径和手动 target-date 路径使用同一套 date-based arXiv 逻辑。
 5. 只用标题和摘要对候选论文排序。
 6. 应用 `executor.score_threshold` 和 `executor.longlist` 形成轻量 longlist。
 7. 根据 `domain.topic` 对 longlist 做领域判定；accepted 论文进入 capture，rejected/uncertain 论文进入审计文件。
@@ -35,7 +35,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 9. 为 accepted 论文生成 TL;DR、英文翻译、作者机构和每日概览。
 10. 按配置尝试发送邮件；如果 SMTP 超时、登录失败或发送失败，只记录 warning 并继续。
 11. 在设置 `hugo.output_dir` 时导出 Hugo Markdown。Markdown 是展示层；机器事实源是 capture JSONL。
-12. 下一次日常运行会再用历史 API 回看昨天的文章，并使用同一份 Zotero 语料排序；若论文集合有差异则自动修正昨天的 capture/Hugo 输出。
+12. 如果默认定时运行没有任何论文通过领域判定，会写一个临时的中英文 Hugo 提示页，提示“昨天没有新论文”；下一次默认定时运行会在处理前清理旧提示。
 
 ## arXiv 访问策略
 
@@ -48,7 +48,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 历史回溯默认每处理一天后等待 `600` 秒。
 - 不再给每个候选论文下载全文，只对领域 accepted 论文抓取。
 - 已缓存的 arXiv 响应会被复用。
-- 最新/RSS 模式不会再访问 arXiv API metadata 端点；指定日期和历史回溯仍会使用 `export.arxiv.org/api/query`。
+- 默认定时运行和手动 target-date 运行都会使用 `export.arxiv.org/api/query` 抓取目标公告日期窗口；全文仍然只在领域 accepted 后抓取。
 
 ## 环境要求
 
@@ -220,13 +220,13 @@ reranker:
 
 ## 运行
 
-运行默认的最新论文流程：
+运行默认定时流程，处理昨天的 arXiv 公告日期：
 
 ```bash
 uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
-这个模式包含“次日校正”：第二天的日常运行会再次通过历史 API 检查昨天的论文，并复用当前 Zotero 语料排序；必要时覆盖昨天的 Hugo 文件，并尝试补发一封说明差异的修订邮件。如果修订邮件失败，只要 Hugo 导出成功，校正仍会视为完成。
+这个模式会先删除旧的“昨天没有新论文”提示页，然后按 `executor.target_date="<昨天>"` 的逻辑处理论文；它不走 RSS 最新论文路径。如果没有任何论文通过领域判定，会生成中英文 Hugo 提示页，显示“昨天没有新论文”，而不是生成普通空论文列表。
 
 运行某个 arXiv 公告日期：
 

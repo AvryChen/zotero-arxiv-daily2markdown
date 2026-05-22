@@ -651,7 +651,7 @@ def test_run_single_day_sends_error_email_on_failure(config, monkeypatch):
         )
     }
 
-    def broken_impl(corpus, *, send_email_enabled=True):
+    def broken_impl(corpus, *, send_email_enabled=True, empty_notice_on_skip=False):
         raise RuntimeError("arxiv unavailable")
 
     executor._run_single_day_impl = broken_impl
@@ -720,7 +720,7 @@ def test_run_date_range_can_send_email(config):
     assert send_flags == [True]
 
 
-def test_run_triggers_previous_day_correction_for_latest_mode(config, monkeypatch):
+def test_run_default_daily_processes_yesterday_target_and_cleans_empty_notices(config):
     executor = Executor.__new__(Executor)
     executor.config = config
     calls = []
@@ -728,12 +728,22 @@ def test_run_triggers_previous_day_correction_for_latest_mode(config, monkeypatc
 
     executor.fetch_zotero_corpus = lambda: corpus
     executor.filter_corpus = lambda items: items
-    executor._run_single_day = lambda corpus, send_email_enabled=True: DailyRunResult(target_date=None)
-    executor._apply_previous_day_correction = lambda correction_corpus: calls.append(("correction", correction_corpus))
+    executor._correction_target_date = lambda: "2026-05-21"
+    executor._cleanup_empty_hugo_notices = lambda: calls.append(("cleanup", config.executor.target_date))
+
+    def run_single_day(corpus, *, send_email_enabled=True, empty_notice_on_skip=False):
+        calls.append((config.executor.target_date, send_email_enabled, empty_notice_on_skip, list(corpus)))
+        return DailyRunResult(target_date=config.executor.target_date)
+
+    executor._run_single_day = run_single_day
 
     executor.run()
 
-    assert calls == [("correction", corpus)]
+    assert calls == [
+        ("cleanup", None),
+        ("2026-05-21", True, True, corpus),
+    ]
+    assert config.executor.target_date is None
 
 
 def test_run_does_not_trigger_previous_day_correction_in_historical_mode(config, monkeypatch):
@@ -756,6 +766,45 @@ def test_run_does_not_trigger_previous_day_correction_in_historical_mode(config,
     executor.run()
 
     assert calls == [("date_range", ["2026-05-01", "2026-05-02", "2026-05-03"])]
+
+
+def test_run_single_day_exports_empty_notice_for_default_daily_empty_result(config, monkeypatch):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.send_empty = False
+        config.executor.target_date = "2026-05-21"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    result = DailyRunResult(target_date="2026-05-21", retrieved_count=5, selected_count=0)
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=result,
+        papers=[],
+        overview_zh="",
+        overview_en="",
+    )
+
+    notice_calls = []
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.export_empty_notice_to_hugo",
+        lambda cfg: notice_calls.append(cfg.executor.target_date) or object(),
+    )
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.export_to_hugo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("normal Hugo export should not run")),
+    )
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("empty email should not be sent")),
+    )
+
+    returned = executor._run_single_day([], send_email_enabled=True, empty_notice_on_skip=True)
+
+    assert returned.skipped is True
+    assert returned.exported is True
+    assert returned.emailed is False
+    assert notice_calls == ["2026-05-21"]
 
 
 def test_previous_day_correction_skips_when_hugo_urls_match(config, monkeypatch, tmp_path):

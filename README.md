@@ -8,7 +8,7 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 
 ## Features
 
-- Fetch papers from arXiv RSS feeds or from an explicit arXiv announcement date.
+- Fetch papers from an explicit arXiv announcement date; the default scheduled run processes yesterday's date with the same target-date path.
 - Build a relevance profile from Zotero papers, with optional collection-path filtering.
 - Rank papers with either a local SentenceTransformers model or an embedding API.
 - Use a longlist plus LLM domain classification so only accepted domain papers enter capture and display outputs.
@@ -16,7 +16,7 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 - Write a normalized capture package with `papers.jsonl`, `domain_decisions.json`, rejected-candidate audit records, run reports, TXT, PDF, and per-paper meta JSON.
 - Generate Chinese/English summaries, affiliations, and a daily overview through a Chat Completions-compatible API.
 - Export an HTML email digest and bilingual Hugo posts; email delivery is best-effort and will not block Hugo export.
-- Automatically re-check the previous day's post on the next daily run using the same Zotero relevance corpus, then overwrite yesterday's Hugo output if the historical API result adds or changes papers. Revision email delivery is also best-effort.
+- Before each default scheduled run, remove stale "No new papers yesterday" Hugo notices from earlier empty days.
 - Backfill historical date ranges with skip-existing, continue-on-error, and day-level cooldown controls.
 - Route only arXiv requests through an optional HTTP/SOCKS proxy such as V2rayN.
 - Cache arXiv RSS/API/full-text responses under `outputs/cache/arxiv`.
@@ -27,7 +27,7 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 1. Load `config/default.yaml`, which merges `config/base.yaml` and `config/custom.yaml`.
 2. Read Zotero `conferencePaper`, `journalArticle`, and `preprint` items, ignoring items without abstracts.
 3. Optionally filter the Zotero corpus with `zotero.include_path` and `zotero.ignore_path`.
-4. Fetch arXiv candidates from RSS or from a target announcement date window. Latest/RSS mode uses RSS metadata directly and does not call the arXiv API again for per-paper metadata.
+4. Fetch arXiv candidates from a target announcement date window. When no explicit date is configured, the CLI temporarily sets `executor.target_date` to yesterday, so the scheduled path uses the same date-based arXiv logic as a manual target run.
 5. Rank candidates using title and abstract only.
 6. Apply `executor.score_threshold` and `executor.longlist` to form a lightweight longlist.
 7. Classify longlisted papers against `domain.topic`; accepted papers are captured, while rejected and uncertain papers are kept in audit files.
@@ -35,7 +35,7 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 9. Generate TL;DRs, English translations, affiliations, and a daily overview for accepted papers.
 10. Try to send email when enabled; SMTP failures are logged and skipped so Hugo export can continue.
 11. Export Hugo Markdown when `hugo.output_dir` is configured. Markdown is a display layer; capture JSONL is the machine-readable fact source.
-12. On the next daily run, re-run the previous day through the historical API path with the same Zotero corpus and correct yesterday's capture/Hugo outputs if the paper set differs.
+12. If the default scheduled run finds no accepted papers, write a temporary bilingual Hugo notice saying there were no new papers yesterday; the next scheduled run removes stale notices before processing the next date.
 
 ## arXiv Access Policy
 
@@ -48,7 +48,7 @@ The project intentionally avoids aggressive crawling:
 - Historical backfill waits `600` seconds between processed dates by default.
 - Full text is not downloaded for every candidate, only for domain-accepted papers.
 - Cached arXiv responses are reused when available.
-- Latest/RSS runs avoid the arXiv API metadata endpoint; date-based runs still use `export.arxiv.org/api/query`.
+- The default scheduled run and manual target-date runs use `export.arxiv.org/api/query` for the target announcement window; full text is fetched only after domain acceptance.
 
 ## Requirements
 
@@ -220,13 +220,13 @@ reranker:
 
 ## Running
 
-Latest-paper workflow:
+Default scheduled workflow, processing yesterday's arXiv announcement date:
 
 ```bash
 uv run python src/zotero_arxiv_daily2markdown/main.py
 ```
 
-This mode has a built-in next-day correction pass: the next daily run will re-check yesterday's papers through the historical API path, reuse the current Zotero corpus for ranking, overwrite yesterday's Hugo files if needed, and try to send a revision email when the paper set changes. If the revision email fails, the correction still counts as complete once Hugo export succeeds.
+This mode first removes stale empty-day Hugo notices, then runs the same logic as `executor.target_date="<yesterday>"`; it does not use the RSS latest-paper path. If no papers are accepted for the domain, it writes bilingual Hugo notice pages saying "No new papers yesterday" instead of a normal empty paper list.
 
 One arXiv announcement date:
 

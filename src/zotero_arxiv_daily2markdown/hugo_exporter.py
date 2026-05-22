@@ -1,11 +1,14 @@
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from loguru import logger
 from omegaconf import DictConfig
 from .protocol import Paper
 import subprocess
 import re
+
+EMPTY_NOTICE_MARKER = "arxiv_empty_notice: true"
 
 
 @dataclass
@@ -57,6 +60,118 @@ def build_hugo_export_artifacts(
         content_zh=_render_post_markdown(papers, "zh", date_str, post_date_time, topic, overview_zh),
         content_en=_render_post_markdown(papers, "en", date_str, post_date_time, topic, overview_en),
     )
+
+
+def build_empty_notice_hugo_artifacts(config: DictConfig) -> HugoExportArtifacts:
+    date_str, post_date_time = _resolve_hugo_date_metadata(config)
+    prompt_cfg = config.get("prompt", {})
+    topic = prompt_cfg.get("topic", "research")
+    filepath_zh, filepath_en = _resolve_hugo_output_paths(config, date_str)
+    return HugoExportArtifacts(
+        date_str=date_str,
+        post_date_time=post_date_time,
+        topic=topic,
+        filepath_zh=filepath_zh,
+        filepath_en=filepath_en,
+        content_zh=_render_empty_notice_markdown(
+            lang="zh",
+            date_str=date_str,
+            post_date_time=post_date_time,
+            topic=topic,
+        ),
+        content_en=_render_empty_notice_markdown(
+            lang="en",
+            date_str=date_str,
+            post_date_time=post_date_time,
+            topic=topic,
+        ),
+    )
+
+
+def _render_empty_notice_markdown(*, lang: str, date_str: str, post_date_time: str, topic: str) -> str:
+    is_zh = lang == "zh"
+    title = "昨天没有新论文" if is_zh else f"arXiv Daily: no new papers for {date_str}"
+    notice = "昨天没有新论文。" if is_zh else "No new papers yesterday."
+    return "\n".join(
+        [
+            "---",
+            f'title: "{title}"',
+            f"date: {post_date_time}",
+            "tags: [arxiv, paper]",
+            "categories: [Daily]",
+            f"lang: {lang}",
+            EMPTY_NOTICE_MARKER,
+            "---",
+            "",
+            "> **今日速览**：" if is_zh else "> **Daily Overview**:",
+            f"> {notice}",
+            "",
+        ]
+    )
+
+
+def export_empty_notice_to_hugo(config: DictConfig) -> HugoExportArtifacts | None:
+    if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
+        return None
+    artifacts = build_empty_notice_hugo_artifacts(config)
+    Path(artifacts.filepath_zh).parent.mkdir(parents=True, exist_ok=True)
+    Path(artifacts.filepath_en).parent.mkdir(parents=True, exist_ok=True)
+    Path(artifacts.filepath_zh).write_text(artifacts.content_zh, encoding="utf-8")
+    Path(artifacts.filepath_en).write_text(artifacts.content_en, encoding="utf-8")
+    logger.info(f"Empty Hugo notice exported to {artifacts.filepath_zh} and {artifacts.filepath_en}")
+    _auto_push_hugo_paths(
+        config,
+        [Path(artifacts.filepath_zh), Path(artifacts.filepath_en)],
+        f"Auto: Add empty arXiv notice for {artifacts.date_str}",
+    )
+    return artifacts
+
+
+def cleanup_empty_hugo_notices(config: DictConfig) -> list[Path]:
+    if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
+        return []
+    output_dir = Path(str(config.hugo.output_dir))
+    removed: list[Path] = []
+    for lang in ("zh", "en"):
+        posts_dir = output_dir / lang / "posts"
+        if not posts_dir.exists():
+            continue
+        for path in posts_dir.glob("*-arxiv-daily.md"):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                logger.warning(f"Failed to read Hugo post {path}: {exc}")
+                continue
+            if EMPTY_NOTICE_MARKER in text:
+                path.unlink()
+                removed.append(path)
+    if removed:
+        logger.info(f"Removed {len(removed)} stale empty Hugo notice files")
+        _auto_push_hugo_paths(config, removed, "Auto: Remove stale empty arXiv notices")
+    return removed
+
+
+def _auto_push_hugo_paths(config: DictConfig, paths: list[Path], commit_msg: str) -> None:
+    if not paths:
+        return
+    if not (config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1")):
+        return
+    output_dir = Path(str(config.hugo.output_dir))
+    repo_dir = output_dir.parent if output_dir.name == "content" else output_dir
+    try:
+        if (repo_dir / ".git" / "rebase-merge").exists() or (repo_dir / ".git" / "rebase-apply").exists():
+            logger.warning("Detected a failed rebase. Aborting to reach a clean state.")
+            subprocess.run(["git", "rebase", "--abort"], cwd=repo_dir)
+        subprocess.run(["git", "pull", "--rebase", "--autostash", "-X", "theirs"], cwd=repo_dir)
+        subprocess.run(["git", "add", "--", *(str(path) for path in paths)], cwd=repo_dir, check=True)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
+        if status:
+            subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir, check=True)
+            subprocess.run(["git", "push"], cwd=repo_dir, check=True)
+    except subprocess.CalledProcessError as exc:
+        logger.error(f"Git operation failed. Error: {exc}")
+    except Exception as exc:
+        logger.error(f"Unexpected error during git push: {exc}")
 
 
 def extract_hugo_paper_urls(markdown: str) -> list[str]:

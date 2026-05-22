@@ -14,7 +14,13 @@ from datetime import date, datetime, timedelta
 from .reranker import get_reranker_cls
 from .construct_email import render_email
 from .utils import send_email
-from .hugo_exporter import build_hugo_export_artifacts, extract_hugo_paper_urls, export_to_hugo
+from .hugo_exporter import (
+    build_hugo_export_artifacts,
+    cleanup_empty_hugo_notices,
+    export_empty_notice_to_hugo,
+    extract_hugo_paper_urls,
+    export_to_hugo,
+)
 from .capture_exporter import export_capture_artifacts
 from .domain_classifier import classify_domain_papers
 from openai import OpenAI
@@ -409,6 +415,12 @@ class Executor:
         except Exception as exc:
             logger.warning(f"Revision email failed for {target_date}; continuing without email: {exc}")
 
+    def _cleanup_empty_hugo_notices(self) -> None:
+        cleanup_empty_hugo_notices(self.config)
+
+    def _export_empty_hugo_notice(self) -> bool:
+        return export_empty_notice_to_hugo(self.config) is not None
+
     def _apply_previous_day_correction(self, corpus: list[CorpusPaper] | None = None) -> None:
         if not hasattr(self.config, "hugo") or not self.config.hugo.get("output_dir"):
             logger.info("Skipping previous-day correction because Hugo output is not configured.")
@@ -484,23 +496,43 @@ class Executor:
             logger.info(f"Selected {len(corpus)} zotero papers:\n{samples}\n...")
         return corpus
 
-    def _run_single_day(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
+    def _run_single_day(
+        self,
+        corpus: list[CorpusPaper],
+        *,
+        send_email_enabled: bool = True,
+        empty_notice_on_skip: bool = False,
+    ) -> DailyRunResult:
         try:
-            return self._run_single_day_impl(corpus, send_email_enabled=send_email_enabled)
+            return self._run_single_day_impl(
+                corpus,
+                send_email_enabled=send_email_enabled,
+                empty_notice_on_skip=empty_notice_on_skip,
+            )
         except Exception as exc:
             self._send_error_email(stage="single-day run", exc=exc)
             raise
 
-    def _run_single_day_impl(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
+    def _run_single_day_impl(
+        self,
+        corpus: list[CorpusPaper],
+        *,
+        send_email_enabled: bool = True,
+        empty_notice_on_skip: bool = False,
+    ) -> DailyRunResult:
         artifacts = self._build_single_day_artifacts(corpus)
         result = artifacts.result
         if result.retrieved_count == 0 and not self.config.executor.send_empty:
             logger.info("No new papers found. No email will be sent.")
+            if empty_notice_on_skip:
+                result.exported = self._export_empty_hugo_notice()
             result.skipped = True
             return result
 
         if result.retrieved_count > 0 and result.selected_count == 0 and not self.config.executor.send_empty:
             logger.info("No papers met the score threshold. No email will be sent.")
+            if empty_notice_on_skip:
+                result.exported = self._export_empty_hugo_notice()
             result.skipped = True
             return result
 
@@ -519,6 +551,17 @@ class Executor:
         export_to_hugo(artifacts.papers, self.config, artifacts.overview_zh, artifacts.overview_en)
         result.exported = True
         return result
+
+    def _run_default_daily(self, corpus: list[CorpusPaper]) -> DailyRunResult:
+        target_date = self._correction_target_date()
+        logger.info(f"Running default daily arXiv target-date workflow for {target_date}")
+        original_target_date = self.config.executor.get("target_date")
+        self._cleanup_empty_hugo_notices()
+        try:
+            self.config.executor.target_date = target_date
+            return self._run_single_day(corpus, send_email_enabled=True, empty_notice_on_skip=True)
+        finally:
+            self.config.executor.target_date = original_target_date
 
     def _run_date_range(self, dates: list[str], corpus: list[CorpusPaper]) -> list[DailyRunResult]:
         send_email_enabled = self._historical_send_email_enabled()
@@ -574,6 +617,7 @@ class Executor:
             logger.info(f"Running historical arXiv daily from {dates[0]} to {dates[-1]}")
             return self._run_date_range(dates, corpus)
 
-        result = self._run_single_day(corpus, send_email_enabled=True)
-        self._apply_previous_day_correction(corpus)
-        return result
+        if self.config.executor.get("target_date"):
+            return self._run_single_day(corpus, send_email_enabled=True)
+
+        return self._run_default_daily(corpus)
