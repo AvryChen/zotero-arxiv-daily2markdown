@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any, Callable, TypeVar
@@ -31,6 +32,7 @@ from ..utils import extract_markdown_from_pdf, extract_tex_code_from_tar, to_boo
 T = TypeVar("T")
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
+CATCHUP_URL_TEMPLATE = "https://arxiv.org/catchup/{archive}/{target_date}"
 DAILY_ARXIV_URL = "https://dailyarxiv.com/query.php"
 DEFAULT_ARXIV_USER_AGENT = "arXiv Daily: Nickelate Superconductors (support@jxchen.org)"
 DEFAULT_ARXIV_PROXY_URL: str | None = None
@@ -119,6 +121,8 @@ def extract_arxiv_id(value: str) -> str:
     value = value.strip()
     for prefix in (
         "oai:arXiv.org:",
+        "/abs/",
+        "/pdf/",
         "https://arxiv.org/abs/",
         "http://arxiv.org/abs/",
         "https://arxiv.org/pdf/",
@@ -177,6 +181,38 @@ def category_to_dailyarxiv_term(category: str) -> str:
     if "." not in category and "-" in category and not category.endswith("*"):
         return f"{category}*"
     return category
+
+
+def category_to_catchup_archive(category: str) -> str:
+    category = str(category).strip()
+    if category.startswith("cat:"):
+        category = category.removeprefix("cat:")
+    category = category.rstrip("*")
+    if "." in category:
+        return category.split(".", 1)[0]
+    return category
+
+
+def _category_matches_config(candidate: str, configured: str) -> bool:
+    candidate = str(candidate).strip()
+    configured = str(configured).strip()
+    if configured.startswith("cat:"):
+        configured = configured.removeprefix("cat:")
+    if configured.endswith("*"):
+        return candidate.startswith(configured[:-1])
+    return candidate == configured or candidate.startswith(f"{configured}.")
+
+
+def _paper_matches_categories(paper_categories: list[str], configured_categories: list[str]) -> bool:
+    if not configured_categories:
+        return True
+    if not paper_categories:
+        return False
+    return any(
+        _category_matches_config(candidate, configured)
+        for candidate in paper_categories
+        for configured in configured_categories
+    )
 
 
 def get_config_bool(config: Any, key: str, default: bool = False) -> bool:
@@ -513,6 +549,218 @@ def _parse_atom_feed(xml_text: str) -> tuple[list[RawArxivResult], int]:
     return entries, total_results
 
 
+def _classes(attrs: dict[str, str]) -> set[str]:
+    return {value.strip() for value in attrs.get("class", "").split() if value.strip()}
+
+
+def _clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _remove_descriptor(value: str, descriptor: str) -> str:
+    return re.sub(rf"^{re.escape(descriptor)}:\s*", "", value, flags=re.IGNORECASE).strip()
+
+
+class _CatchupParser(HTMLParser):
+    def __init__(self, target_date: str):
+        super().__init__(convert_charrefs=True)
+        self.target_date = target_date
+        self.articles: list[dict[str, Any]] = []
+        self.in_articles = False
+        self.in_dt = False
+        self.in_dd = False
+        self.capturing_section = False
+        self.current_section = ""
+        self.current: dict[str, Any] | None = None
+        self.current_field: str | None = None
+        self.field_buffer: list[str] = []
+        self.section_buffer: list[str] = []
+        self.author_buffer: list[str] = []
+        self.author_link_buffer: list[str] | None = None
+        self.primary_subject_buffer: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs_list: list[tuple[str, str | None]]) -> None:
+        attrs = {key: value or "" for key, value in attrs_list}
+        if tag == "dl" and attrs.get("id") == "articles":
+            self.in_articles = True
+            return
+        if not self.in_articles:
+            return
+
+        if tag == "h3":
+            self.capturing_section = True
+            self.section_buffer = []
+            return
+
+        if tag == "dt":
+            self.current = {
+                "section": self.current_section,
+                "paper_id": None,
+                "title": "",
+                "authors": [],
+                "summary": "",
+                "pdf_url": None,
+                "categories": [],
+                "primary_category": None,
+            }
+            self.in_dt = True
+            return
+
+        if tag == "dd":
+            self.in_dd = True
+            return
+
+        if self.current is None:
+            return
+
+        if tag == "a" and self.in_dt:
+            href = attrs.get("href", "")
+            if href.startswith("/abs/") and not self.current["paper_id"]:
+                self.current["paper_id"] = extract_arxiv_id(href)
+            elif href.startswith("/pdf/") and not self.current["pdf_url"]:
+                self.current["pdf_url"] = f"https://arxiv.org{href}"
+            return
+
+        class_names = _classes(attrs)
+        if tag == "div" and self.in_dd:
+            if "list-title" in class_names:
+                self._start_field("title")
+            elif "list-authors" in class_names:
+                self._start_field("authors")
+                self.author_buffer = []
+            elif "list-subjects" in class_names:
+                self._start_field("subjects")
+            return
+
+        if tag == "p" and self.in_dd and "mathjax" in class_names and not self.current.get("summary"):
+            self._start_field("summary")
+            return
+
+        if tag == "a" and self.current_field == "authors":
+            self.author_link_buffer = []
+            return
+
+        if tag == "span" and self.current_field == "subjects" and "primary-subject" in class_names:
+            self.primary_subject_buffer = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.in_articles:
+            return
+
+        if tag == "h3":
+            section = _clean_text("".join(self.section_buffer))
+            if section:
+                self.current_section = re.sub(r"\s*\(.*\)\s*$", "", section).strip()
+            self.section_buffer = []
+            self.capturing_section = False
+            return
+
+        if tag == "a" and self.current_field == "authors" and self.author_link_buffer is not None:
+            author = _clean_text("".join(self.author_link_buffer))
+            if author:
+                self.author_buffer.append(author)
+            self.author_link_buffer = None
+            return
+
+        if tag == "span" and self.current_field == "subjects" and self.primary_subject_buffer is not None:
+            text = _clean_text("".join(self.primary_subject_buffer))
+            match = re.search(r"\(([^()]+)\)", text)
+            if match and self.current is not None:
+                self.current["primary_category"] = match.group(1).strip()
+            self.primary_subject_buffer = None
+            return
+
+        if tag in {"div", "p"} and self.current_field:
+            self._finish_field()
+            return
+
+        if tag == "dt":
+            self.in_dt = False
+            return
+
+        if tag == "dd":
+            self.in_dd = False
+            if self.current and self.current.get("paper_id"):
+                self.articles.append(self.current)
+            self.current = None
+            self.current_field = None
+            return
+
+        if tag == "dl":
+            self.in_articles = False
+
+    def handle_data(self, data: str) -> None:
+        if not self.in_articles:
+            return
+        if self.capturing_section:
+            self.section_buffer.append(data)
+        if self.current_field:
+            self.field_buffer.append(data)
+        if self.author_link_buffer is not None:
+            self.author_link_buffer.append(data)
+        if self.primary_subject_buffer is not None:
+            self.primary_subject_buffer.append(data)
+
+    def _start_field(self, name: str) -> None:
+        self.current_field = name
+        self.field_buffer = []
+
+    def _finish_field(self) -> None:
+        if self.current is None or self.current_field is None:
+            return
+
+        text = _clean_text("".join(self.field_buffer))
+        if self.current_field == "title":
+            self.current["title"] = _remove_descriptor(text, "Title")
+        elif self.current_field == "authors":
+            self.current["authors"] = list(self.author_buffer)
+            if not self.current["authors"]:
+                authors_text = _remove_descriptor(text, "Authors")
+                self.current["authors"] = [
+                    _clean_text(author)
+                    for author in authors_text.split(",")
+                    if _clean_text(author)
+                ]
+        elif self.current_field == "subjects":
+            subjects_text = _remove_descriptor(text, "Subjects")
+            categories = [match.strip() for match in re.findall(r"\(([^()]+)\)", subjects_text)]
+            self.current["categories"] = categories
+            if not self.current.get("primary_category") and categories:
+                self.current["primary_category"] = categories[0]
+        elif self.current_field == "summary":
+            self.current["summary"] = text
+
+        self.current_field = None
+        self.field_buffer = []
+
+
+def _parse_catchup_html(html_text: str, target_date: str, configured_categories: list[str]) -> list[RawArxivResult]:
+    parser = _CatchupParser(target_date)
+    parser.feed(html_text)
+    parser.close()
+
+    papers: list[RawArxivResult] = []
+    for article in parser.articles:
+        paper_id = str(article["paper_id"])
+        categories = list(article.get("categories") or [])
+        if not _paper_matches_categories(categories, configured_categories):
+            continue
+        papers.append(
+            RawArxivResult(
+                title=str(article.get("title") or "").strip(),
+                authors=[RawArxivAuthor(name=name) for name in article.get("authors", []) if str(name).strip()],
+                summary=str(article.get("summary") or "").strip(),
+                pdf_url=article.get("pdf_url") or f"https://arxiv.org/pdf/{paper_id}",
+                entry_id=f"https://arxiv.org/abs/{paper_id}",
+                published=f"{target_date}T00:00:00Z",
+                updated=f"{target_date}T00:00:00Z",
+                categories=categories,
+                primary_category=article.get("primary_category"),
+            )
+        )
+    return papers
+
+
 def _clean_rss_summary(summary: Any) -> str:
     summary_text = re.sub(r"\s+", " ", str(summary or "")).strip()
     summary_text = re.sub(
@@ -847,6 +1095,25 @@ class ArxivRetriever(BaseRetriever):
         return feedparser.parse(content)
 
     def _retrieve_by_target_date(self, target_date: str) -> list[RawArxivResult]:
+        source = str(self.config.executor.get("target_date_source", "auto")).lower()
+        if source not in {"auto", "catchup", "api"}:
+            raise ValueError("executor.target_date_source must be one of: auto, catchup, api")
+
+        if source in {"auto", "catchup"}:
+            try:
+                raw_papers = self._retrieve_by_catchup_date(target_date)
+                if get_config_bool(self.config.executor, "cross_validate_dailyarxiv", False):
+                    self._cross_validate_with_dailyarxiv(target_date, raw_papers, self.last_fetch_report)
+                    self._finalize_report(self.last_fetch_report)
+                return raw_papers
+            except Exception as exc:
+                if source == "catchup":
+                    raise
+                logger.warning(f"arXiv catchup fetch failed for {target_date}; falling back to export API: {exc}")
+
+        return self._retrieve_by_api_target_date(target_date)
+
+    def _retrieve_by_api_target_date(self, target_date: str) -> list[RawArxivResult]:
         from_stamp, to_stamp = build_announcement_window(target_date)
         report = ArxivFetchReport(mode="submittedDate")
         page_size = int(self.config.executor.get("arxiv_page_size", 800))
@@ -856,6 +1123,40 @@ class ArxivRetriever(BaseRetriever):
         if get_config_bool(self.config.executor, "cross_validate_dailyarxiv", False):
             self._cross_validate_with_dailyarxiv(target_date, raw_papers, report)
 
+        self.last_fetch_report = report
+        self._finalize_report(report)
+        return raw_papers
+
+    def _retrieve_by_catchup_date(self, target_date: str) -> list[RawArxivResult]:
+        report = ArxivFetchReport(mode="catchup")
+        raw_papers: list[RawArxivResult] = []
+        seen_archives: set[str] = set()
+
+        for category in self.categories:
+            archive = category_to_catchup_archive(category)
+            if archive in seen_archives:
+                continue
+            seen_archives.add(archive)
+            url = CATCHUP_URL_TEMPLATE.format(archive=archive, target_date=target_date)
+            try:
+                html_text = self._arxiv_get_text(
+                    url,
+                    params={"abs": "True"},
+                    cache_kind="catchup",
+                    cache_scope=target_date,
+                )
+                raw_papers.extend(_parse_catchup_html(html_text, target_date, self.categories))
+            except Exception as exc:
+                report.failed_pages.append(f"{url}: {exc}")
+
+        fetched_ids = [extract_arxiv_id(result.entry_id) for result in raw_papers]
+        unique_ids, duplicate_ids = stable_unique(fetched_ids)
+        by_id = {extract_arxiv_id(result.entry_id): result for result in raw_papers}
+        raw_papers = [by_id[paper_id] for paper_id in unique_ids if paper_id in by_id]
+        report.expected_count = len(raw_papers)
+        report.fetched_ids = unique_ids
+        report.fetched_count = len(unique_ids)
+        report.duplicate_ids = duplicate_ids
         self.last_fetch_report = report
         self._finalize_report(report)
         return raw_papers

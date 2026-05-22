@@ -27,7 +27,7 @@ This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://git
 1. Load `config/default.yaml`, which merges `config/base.yaml` and `config/custom.yaml`.
 2. Read Zotero `conferencePaper`, `journalArticle`, and `preprint` items, ignoring items without abstracts.
 3. Optionally filter the Zotero corpus with `zotero.include_path` and `zotero.ignore_path`.
-4. Fetch arXiv candidates from a target announcement date window. When no explicit date is configured, the CLI temporarily sets `executor.target_date` to yesterday, so the scheduled path uses the same date-based arXiv logic as a manual target run.
+4. Fetch arXiv candidates for a target announcement date. The default `auto` source first parses the arXiv catchup page, including new submissions, cross-lists, and replacements, and falls back to the export API only if catchup fails. When no explicit date is configured, the CLI temporarily sets `executor.target_date` to yesterday, so the scheduled path uses the same date-based arXiv logic as a manual target run.
 5. Rank candidates using title and abstract only.
 6. Apply `executor.score_threshold` and `executor.longlist` to form a lightweight longlist.
 7. Classify longlisted papers against `domain.topic`; accepted papers are captured, while rejected and uncertain papers are kept in audit files.
@@ -48,7 +48,7 @@ The project intentionally avoids aggressive crawling:
 - Historical backfill waits `600` seconds between processed dates by default.
 - Full text is not downloaded for every candidate, only for domain-accepted papers.
 - Cached arXiv responses are reused when available.
-- The default scheduled run and manual target-date runs use `export.arxiv.org/api/query` for the target announcement window; full text is fetched only after domain acceptance.
+- The default scheduled run and manual target-date runs use the arXiv catchup HTML page for candidate discovery, then fetch full text only after domain acceptance. The export API is a fallback, not the first choice.
 
 ## Requirements
 
@@ -158,6 +158,7 @@ hugo:
 | `capture.fulltext_dir` | Directory for accepted-paper TXT/PDF/meta artifacts. |
 | `display.max_paper_num` | Maximum accepted papers shown in email and Hugo output; does not limit capture. |
 | `executor.target_date` | Run one arXiv announcement date in `YYYY-MM-DD` format. |
+| `executor.target_date_source` | Candidate source for target-date runs: `auto` uses catchup first and falls back to API, `catchup` disables API fallback, and `api` preserves the old export API path. |
 | `executor.start_date`, `executor.end_date` | Backfill a date range, inclusive. |
 | `executor.historical_mode` | `export_only` or `email_and_export` for historical runs. |
 | `executor.historical_day_cooldown_seconds` | Cooldown between processed historical dates. |

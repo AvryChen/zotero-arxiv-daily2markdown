@@ -76,6 +76,7 @@ executor:
   source: ??? # 要抓取的论文来源，目前仅支持 ['arxiv']。
   reranker: local # 使用的重排序器。示例：'local' 或 'api'
   target_date: null # 要抓取的目标日期，格式为 YYYY-MM-DD；为 null 时抓取最新论文。示例："2026-05-01"
+  target_date_source: auto # 指定日期候选发现来源。auto 会优先解析 arXiv catchup 网页，失败再回退 export API；可选 auto/catchup/api。
   start_date: null # 批量回溯的开始日期，格式为 YYYY-MM-DD；需要和 end_date 一起使用。
   end_date: null # 批量回溯的结束日期，格式为 YYYY-MM-DD；区间包含开始和结束两天。
   historical_mode: export_only # 批量回溯时的输出模式。export_only 只导出 Hugo；email_and_export 会同时发送邮件。

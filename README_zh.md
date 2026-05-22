@@ -27,7 +27,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 1. 加载 `config/default.yaml`，它会合并 `config/base.yaml` 和 `config/custom.yaml`。
 2. 读取 Zotero 中的 `conferencePaper`、`journalArticle`、`preprint` 条目，并忽略没有摘要的条目。
 3. 可选地用 `zotero.include_path` 和 `zotero.ignore_path` 筛选 Zotero 语料。
-4. 从目标公告日期窗口抓取 arXiv 候选论文。没有显式配置日期时，CLI 会临时把 `executor.target_date` 设为昨天，因此默认定时路径和手动 target-date 路径使用同一套 date-based arXiv 逻辑。
+4. 按目标公告日期抓取 arXiv 候选论文。默认 `auto` 来源会优先解析 arXiv catchup 网页，纳入 new submissions、cross-lists 和 replacements；只有 catchup 失败时才回退 export API。没有显式配置日期时，CLI 会临时把 `executor.target_date` 设为昨天，因此默认定时路径和手动 target-date 路径使用同一套 date-based arXiv 逻辑。
 5. 只用标题和摘要对候选论文排序。
 6. 应用 `executor.score_threshold` 和 `executor.longlist` 形成轻量 longlist。
 7. 根据 `domain.topic` 对 longlist 做领域判定；accepted 论文进入 capture，rejected/uncertain 论文进入审计文件。
@@ -48,7 +48,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 历史回溯默认每处理一天后等待 `600` 秒。
 - 不再给每个候选论文下载全文，只对领域 accepted 论文抓取。
 - 已缓存的 arXiv 响应会被复用。
-- 默认定时运行和手动 target-date 运行都会使用 `export.arxiv.org/api/query` 抓取目标公告日期窗口；全文仍然只在领域 accepted 后抓取。
+- 默认定时运行和手动 target-date 运行都会优先用 arXiv catchup HTML 页面做候选发现，领域 accepted 后才抓全文。export API 只作为 fallback，不再是首选入口。
 
 ## 环境要求
 
@@ -158,6 +158,7 @@ hugo:
 | `capture.fulltext_dir` | accepted 论文 TXT/PDF/meta 的输出目录。 |
 | `display.max_paper_num` | 邮件和 Hugo 展示的 accepted 论文上限，不限制底层 capture 收录。 |
 | `executor.target_date` | 运行单个 arXiv 公告日期，格式为 `YYYY-MM-DD`。 |
+| `executor.target_date_source` | 指定日期候选来源：`auto` 优先 catchup、失败回退 API，`catchup` 禁用 API 回退，`api` 保留旧的 export API 路径。 |
 | `executor.start_date`, `executor.end_date` | 按闭区间回溯历史日期。 |
 | `executor.historical_mode` | 历史回溯模式：`export_only` 或 `email_and_export`。 |
 | `executor.historical_day_cooldown_seconds` | 历史回溯中两个已处理日期之间的冷却秒数。 |
