@@ -8,13 +8,15 @@ from types import SimpleNamespace
 from typing import Any, Callable, TypeVar
 from queue import Empty
 from xml.etree import ElementTree as ET
+import hashlib
+import json
 import multiprocessing
 import os
+from pathlib import Path
 import re
 import threading
 import time
 
-import arxiv
 from arxiv import Result as ArxivResult
 import feedparser
 from loguru import logger
@@ -30,15 +32,15 @@ T = TypeVar("T")
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 DAILY_ARXIV_URL = "https://dailyarxiv.com/query.php"
+DEFAULT_ARXIV_USER_AGENT = "arXiv Daily: Nickelate Superconductors (support@jxchen.org)"
+DEFAULT_ARXIV_PROXY_URL: str | None = None
 DOWNLOAD_TIMEOUT = (10, 60)
 FETCH_TIMEOUT = 30
 PDF_EXTRACT_TIMEOUT = 180
 TAR_EXTRACT_TIMEOUT = 180
 
-_ARXIV_API_REQUEST_LOCK = threading.Lock()
-_last_arxiv_api_request_at: float | None = None
-_ARXIV_RSS_REQUEST_LOCK = threading.Lock()
-_last_arxiv_rss_request_at: float | None = None
+_ARXIV_REQUEST_LOCK = threading.Lock()
+_last_arxiv_request_at: float | None = None
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 OPENSEARCH_NS = "{http://a9.com/-/spec/opensearch/1.1/}"
@@ -119,6 +121,8 @@ def extract_arxiv_id(value: str) -> str:
         "oai:arXiv.org:",
         "https://arxiv.org/abs/",
         "http://arxiv.org/abs/",
+        "https://arxiv.org/pdf/",
+        "http://arxiv.org/pdf/",
         "https://export.arxiv.org/abs/",
         "http://export.arxiv.org/abs/",
     ):
@@ -179,6 +183,19 @@ def get_config_bool(config: Any, key: str, default: bool = False) -> bool:
     return to_bool(config.get(key, default))
 
 
+def _blank_to_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def _default_arxiv_proxies() -> dict[str, str] | None:
+    if not DEFAULT_ARXIV_PROXY_URL:
+        return None
+    return {"http": DEFAULT_ARXIV_PROXY_URL, "https": DEFAULT_ARXIV_PROXY_URL}
+
+
 def _retry_after_seconds(response: Any, fallback_seconds: float) -> float:
     retry_after = getattr(response, "headers", {}).get("Retry-After")
     if retry_after:
@@ -195,61 +212,140 @@ def _retry_after_seconds(response: Any, fallback_seconds: float) -> float:
     return fallback_seconds
 
 
+def _reset_arxiv_request_throttle() -> None:
+    global _last_arxiv_request_at
+    with _ARXIV_REQUEST_LOCK:
+        _last_arxiv_request_at = None
+
+
 def _reset_arxiv_api_request_throttle() -> None:
-    global _last_arxiv_api_request_at
-    with _ARXIV_API_REQUEST_LOCK:
-        _last_arxiv_api_request_at = None
+    _reset_arxiv_request_throttle()
 
 
 def _reset_arxiv_rss_request_throttle() -> None:
-    global _last_arxiv_rss_request_at
-    with _ARXIV_RSS_REQUEST_LOCK:
-        _last_arxiv_rss_request_at = None
+    _reset_arxiv_request_throttle()
 
 
-def _sleep_before_arxiv_request(
-    min_interval_seconds: float,
-    *,
-    lock: threading.Lock,
-    last_request_at: float | None,
-) -> float | None:
+def _sleep_before_arxiv_request(min_interval_seconds: float) -> float | None:
+    global _last_arxiv_request_at
     min_interval_seconds = max(0.0, min_interval_seconds)
     if min_interval_seconds <= 0:
-        return last_request_at
+        _last_arxiv_request_at = time.monotonic()
+        return _last_arxiv_request_at
 
-    with lock:
-        now = time.monotonic()
-        if last_request_at is not None:
-            elapsed = now - last_request_at
-            wait_seconds = min_interval_seconds - elapsed
-            if wait_seconds > 0:
-                logger.debug(f"Waiting {wait_seconds:.1f}s before next arXiv request")
-                time.sleep(wait_seconds)
-                now = time.monotonic()
-        return now
+    now = time.monotonic()
+    if _last_arxiv_request_at is not None:
+        elapsed = now - _last_arxiv_request_at
+        wait_seconds = min_interval_seconds - elapsed
+        if wait_seconds > 0:
+            logger.debug(f"Waiting {wait_seconds:.1f}s before next arXiv request")
+            time.sleep(wait_seconds)
+            now = time.monotonic()
+    _last_arxiv_request_at = now
+    return now
 
 
 def _sleep_before_arxiv_api_request(min_interval_seconds: float) -> None:
-    global _last_arxiv_api_request_at
-    _last_arxiv_api_request_at = _sleep_before_arxiv_request(
-        min_interval_seconds,
-        lock=_ARXIV_API_REQUEST_LOCK,
-        last_request_at=_last_arxiv_api_request_at,
-    )
+    with _ARXIV_REQUEST_LOCK:
+        _sleep_before_arxiv_request(min_interval_seconds)
 
 
 def _sleep_before_arxiv_rss_request(min_interval_seconds: float) -> None:
-    global _last_arxiv_rss_request_at
-    _last_arxiv_rss_request_at = _sleep_before_arxiv_request(
-        min_interval_seconds,
-        lock=_ARXIV_RSS_REQUEST_LOCK,
-        last_request_at=_last_arxiv_rss_request_at,
-    )
+    with _ARXIV_REQUEST_LOCK:
+        _sleep_before_arxiv_request(min_interval_seconds)
 
+
+def _perform_arxiv_request(min_interval_seconds: float, request_func: Callable[[], T]) -> T:
+    with _ARXIV_REQUEST_LOCK:
+        _sleep_before_arxiv_request(min_interval_seconds)
+        return request_func()
 
 def _status_code_from_error(exc: Exception, response: Any | None = None) -> int | None:
     error_response = getattr(exc, "response", None)
     return getattr(error_response, "status_code", None) or getattr(response, "status_code", None)
+
+
+def _jsonable_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    if not params:
+        return {}
+    return {key: params[key] for key in sorted(params)}
+
+
+def _safe_cache_name(kind: str, payload: dict[str, Any]) -> str:
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"{kind}-{digest}"
+
+
+def _cache_path(cache_dir: str | os.PathLike[str], kind: str, payload: dict[str, Any], suffix: str) -> Path:
+    return Path(cache_dir) / f"{_safe_cache_name(kind, payload)}{suffix}"
+
+
+def _read_cache_bytes(cache_dir: str | os.PathLike[str], kind: str, payload: dict[str, Any]) -> bytes | None:
+    path = _cache_path(cache_dir, kind, payload, ".bin")
+    try:
+        if path.exists():
+            logger.debug(f"Using arXiv cache {path}")
+            return path.read_bytes()
+    except OSError as exc:
+        logger.warning(f"Failed to read arXiv cache {path}: {exc}")
+    return None
+
+
+def _write_cache_bytes(cache_dir: str | os.PathLike[str], kind: str, payload: dict[str, Any], content: bytes) -> None:
+    path = _cache_path(cache_dir, kind, payload, ".bin")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    except OSError as exc:
+        logger.warning(f"Failed to write arXiv cache {path}: {exc}")
+
+
+def _read_cache_json(cache_dir: str | os.PathLike[str], kind: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    path = _cache_path(cache_dir, kind, payload, ".json")
+    try:
+        if path.exists():
+            logger.debug(f"Using arXiv cache {path}")
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f"Failed to read arXiv cache {path}: {exc}")
+    return None
+
+
+def _write_cache_json(cache_dir: str | os.PathLike[str], kind: str, payload: dict[str, Any], content: dict[str, Any]) -> None:
+    path = _cache_path(cache_dir, kind, payload, ".json")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Failed to write arXiv cache {path}: {exc}")
+
+
+def _write_cache_failure(
+    cache_dir: str | os.PathLike[str],
+    kind: str,
+    payload: dict[str, Any],
+    exc: Exception,
+    *,
+    status_code: int | None = None,
+) -> None:
+    path = _cache_path(cache_dir, kind, payload, ".failed.json")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "status_code": status_code,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as write_exc:
+        logger.warning(f"Failed to write arXiv failure cache {path}: {write_exc}")
 
 
 def parse_arxiv_datetime(value: Any) -> Any:
@@ -263,12 +359,21 @@ def parse_arxiv_datetime(value: Any) -> Any:
 
 
 def _download_file(url: str, path: str) -> None:
-    with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
-        response.raise_for_status()
-        with open(path, "wb") as file:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    file.write(chunk)
+    with _ARXIV_REQUEST_LOCK:
+        _sleep_before_arxiv_request(5)
+        response = requests.get(
+            url,
+            headers={"User-Agent": DEFAULT_ARXIV_USER_AGENT},
+            proxies=_default_arxiv_proxies(),
+            stream=True,
+            timeout=DOWNLOAD_TIMEOUT,
+        )
+        with response:
+            response.raise_for_status()
+            with open(path, "wb") as file:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        file.write(chunk)
 
 
 def _run_in_subprocess(
@@ -328,10 +433,17 @@ def _extract_text_from_pdf_worker(pdf_url: str) -> str:
 def _extract_text_from_html_worker(html_url: str) -> str | None:
     import trafilatura
 
-    downloaded = trafilatura.fetch_url(html_url)
-    if downloaded is None:
-        raise ValueError(f"Failed to download HTML from {html_url}")
-    text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+    response = _perform_arxiv_request(
+        5,
+        lambda: requests.get(
+            html_url,
+            headers={"User-Agent": DEFAULT_ARXIV_USER_AGENT},
+            proxies=_default_arxiv_proxies(),
+            timeout=FETCH_TIMEOUT,
+        ),
+    )
+    response.raise_for_status()
+    text = trafilatura.extract(response.text, include_comments=False, include_tables=False)
     if not text:
         raise ValueError(f"No text extracted from {html_url}")
     return text
@@ -408,7 +520,7 @@ class ArxivRetriever(BaseRetriever):
         if self.config.source.arxiv.category is None:
             raise ValueError("category must be specified for arxiv.")
         self.last_fetch_report: ArxivFetchReport | None = None
-        self.fetch_full_text_during_retrieval = True
+        self.fetch_full_text_during_retrieval = False
 
     @property
     def categories(self) -> list[str]:
@@ -416,6 +528,212 @@ class ArxivRetriever(BaseRetriever):
         if isinstance(categories, str):
             return [categories]
         return list(categories)
+
+    @property
+    def arxiv_user_agent(self) -> str:
+        return str(self.config.executor.get("arxiv_user_agent", DEFAULT_ARXIV_USER_AGENT))
+
+    @property
+    def arxiv_cache_enabled(self) -> bool:
+        return get_config_bool(self.config.executor, "arxiv_cache_enabled", True)
+
+    @property
+    def arxiv_cache_dir(self) -> str:
+        return str(self.config.executor.get("arxiv_cache_dir", "outputs/cache/arxiv"))
+
+    def _arxiv_headers(self) -> dict[str, str]:
+        return {"User-Agent": self.arxiv_user_agent}
+
+    def _arxiv_proxies(self) -> dict[str, str] | None:
+        enabled_value = self.config.executor.get("arxiv_proxy_enabled", None)
+        if enabled_value is None:
+            enabled = to_bool(os.getenv("ARXIV_PROXY_ENABLED", False))
+        else:
+            enabled = to_bool(enabled_value)
+        if not enabled:
+            return None
+
+        proxy_url = _blank_to_none(self.config.executor.get("arxiv_proxy_url", None))
+        if proxy_url is None:
+            proxy_url = _blank_to_none(os.getenv("ARXIV_PROXY_URL"))
+        if proxy_url is None:
+            return None
+
+        proxies = {"http": proxy_url, "https": proxy_url}
+        no_proxy = _blank_to_none(self.config.executor.get("arxiv_proxy_no_proxy", None))
+        if no_proxy is None:
+            no_proxy = _blank_to_none(os.getenv("ARXIV_PROXY_NO_PROXY"))
+        if no_proxy:
+            proxies["no_proxy"] = no_proxy
+        return proxies
+
+    def _arxiv_request_interval(self) -> float:
+        return max(0.0, float(self.config.executor.get("arxiv_request_interval_seconds", 5)))
+
+    def _cache_payload(
+        self,
+        *,
+        url: str,
+        params: dict[str, Any] | None = None,
+        scope: str | None = None,
+        paper_id: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "url": url,
+            "params": _jsonable_params(params),
+            "scope": scope,
+            "paper_id": paper_id,
+        }
+
+    def _arxiv_get_bytes(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: Any = FETCH_TIMEOUT,
+        cache_kind: str,
+        cache_scope: str | None = None,
+        paper_id: str | None = None,
+        cache_success: bool = True,
+    ) -> bytes:
+        payload = self._cache_payload(url=url, params=params, scope=cache_scope, paper_id=paper_id)
+        if cache_success and self.arxiv_cache_enabled:
+            cached = _read_cache_bytes(self.arxiv_cache_dir, cache_kind, payload)
+            if cached is not None:
+                return cached
+
+        if cache_kind == "rss":
+            retries = max(1, int(self.config.executor.get("arxiv_rss_retries", self.config.executor.get("arxiv_query_retries", 5))))
+            base_delay = float(self.config.executor.get("arxiv_rss_retry_base_seconds", self.config.executor.get("arxiv_retry_base_seconds", 10)))
+            max_delay = float(self.config.executor.get("arxiv_rss_retry_max_seconds", self.config.executor.get("arxiv_retry_max_seconds", 120)))
+            cooldown_retries = max(0, int(self.config.executor.get("arxiv_rss_cooldown_retries", 1)))
+            cooldown_seconds = float(self.config.executor.get("arxiv_rss_cooldown_seconds", self.config.executor.get("arxiv_429_cooldown_seconds", 300)))
+        else:
+            retries = max(1, int(self.config.executor.get("arxiv_query_retries", 5)))
+            base_delay = float(self.config.executor.get("arxiv_retry_base_seconds", 10))
+            max_delay = float(self.config.executor.get("arxiv_retry_max_seconds", 120))
+            cooldown_retries = max(0, int(self.config.executor.get("arxiv_429_cooldown_retries", 1)))
+            cooldown_seconds = float(
+                self.config.executor.get(
+                    "arxiv_failure_cooldown_seconds",
+                    self.config.executor.get("arxiv_429_cooldown_seconds", 300),
+                )
+            )
+
+        attempt = 0
+        cooldowns_used = 0
+        while True:
+            attempt += 1
+            response = None
+            try:
+                response = _perform_arxiv_request(
+                    self._arxiv_request_interval(),
+                    lambda: requests.get(
+                        url,
+                        params=params,
+                        headers=self._arxiv_headers(),
+                        proxies=self._arxiv_proxies(),
+                        timeout=timeout,
+                    ),
+                )
+                response.raise_for_status()
+                content = response.content
+                if cache_success and self.arxiv_cache_enabled:
+                    _write_cache_bytes(self.arxiv_cache_dir, cache_kind, payload, content)
+                return content
+            except requests.HTTPError as exc:
+                status_code = _status_code_from_error(exc, response)
+                should_retry = status_code in {403, 429} or (status_code is not None and 500 <= status_code < 600)
+                if not should_retry:
+                    if self.arxiv_cache_enabled:
+                        _write_cache_failure(self.arxiv_cache_dir, cache_kind, payload, exc, status_code=status_code)
+                    raise
+                if attempt >= retries:
+                    if cooldowns_used < cooldown_retries:
+                        cooldowns_used += 1
+                        http_cooldown_seconds = (
+                            float(self.config.executor.get("arxiv_429_cooldown_seconds", cooldown_seconds))
+                            if status_code == 429 and cache_kind != "rss"
+                            else cooldown_seconds
+                        )
+                        wait_seconds = _retry_after_seconds(response, http_cooldown_seconds)
+                        logger.warning(
+                            f"arXiv request failed with HTTP {status_code} for {url}. "
+                            f"Cooling down for {wait_seconds:.1f}s "
+                            f"({cooldowns_used}/{cooldown_retries})"
+                        )
+                        time.sleep(wait_seconds)
+                        attempt = 0
+                        continue
+                    if self.arxiv_cache_enabled:
+                        _write_cache_failure(self.arxiv_cache_dir, cache_kind, payload, exc, status_code=status_code)
+                    raise
+                fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                wait_seconds = _retry_after_seconds(response, fallback_delay)
+                logger.warning(
+                    f"arXiv request returned HTTP {status_code} for {url}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
+            except requests.RequestException as exc:
+                if attempt >= retries:
+                    if cooldowns_used < cooldown_retries:
+                        cooldowns_used += 1
+                        logger.warning(
+                            f"arXiv request failed for {url} after {attempt} attempts: {exc}. "
+                            f"Cooling down for {cooldown_seconds:.1f}s "
+                            f"({cooldowns_used}/{cooldown_retries})"
+                        )
+                        time.sleep(cooldown_seconds)
+                        attempt = 0
+                        continue
+                    if self.arxiv_cache_enabled:
+                        _write_cache_failure(self.arxiv_cache_dir, cache_kind, payload, exc)
+                    raise
+                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                logger.warning(
+                    f"arXiv request failed for {url}: {exc}. "
+                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
+                )
+                time.sleep(wait_seconds)
+
+    def _arxiv_get_text(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout: Any = FETCH_TIMEOUT,
+        cache_kind: str,
+        cache_scope: str | None = None,
+        paper_id: str | None = None,
+        cache_success: bool = True,
+    ) -> str:
+        content = self._arxiv_get_bytes(
+            url,
+            params=params,
+            timeout=timeout,
+            cache_kind=cache_kind,
+            cache_scope=cache_scope,
+            paper_id=paper_id,
+            cache_success=cache_success,
+        )
+        return content.decode("utf-8", errors="replace")
+
+    def _read_full_text_cache(self, paper_id: str) -> str | None:
+        if not self.arxiv_cache_enabled:
+            return None
+        cached = _read_cache_json(self.arxiv_cache_dir, "fulltext", {"paper_id": paper_id})
+        if cached and isinstance(cached.get("text"), str):
+            return cached["text"]
+        return None
+
+    def _write_full_text_cache(self, paper_id: str, text: str) -> None:
+        if self.arxiv_cache_enabled:
+            _write_cache_json(self.arxiv_cache_dir, "fulltext", {"paper_id": paper_id}, {"paper_id": paper_id, "text": text})
+
+    def _write_full_text_failure(self, kind: str, paper_id: str, exc: Exception) -> None:
+        if self.arxiv_cache_enabled:
+            _write_cache_failure(self.arxiv_cache_dir, kind, {"paper_id": paper_id}, exc)
 
     def _retrieve_raw_papers(self) -> list[ArxivResult | RawArxivResult]:
         target_date = self.config.executor.get("target_date")
@@ -432,19 +750,13 @@ class ArxivRetriever(BaseRetriever):
         report = ArxivFetchReport(mode="rss")
         include_cross_list = get_config_bool(self.config.source.arxiv, "include_cross_list", False)
         allowed_announce_types = {"new", "cross"} if include_cross_list else {"new"}
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            )
-        }
 
         all_paper_ids: list[str] = []
         for category in self.categories:
             feed_url = f"https://rss.arxiv.org/atom/{category}"
             logger.debug(f"Fetching arxiv rss feed from {feed_url}")
             try:
-                feed = self._fetch_arxiv_rss_feed(category, headers)
+                feed = self._fetch_arxiv_rss_feed(category)
             except Exception as exc:
                 report.failed_pages.append(feed_url)
                 logger.warning(f"Failed to fetch RSS feed for {category}: {exc}")
@@ -473,69 +785,14 @@ class ArxivRetriever(BaseRetriever):
         self._finalize_report(report)
         return raw_papers
 
-    def _fetch_arxiv_rss_feed(self, category: str, headers: dict[str, str]) -> Any:
-        retries = max(1, int(self.config.executor.get("arxiv_rss_retries", self.config.executor.get("arxiv_query_retries", 5))))
-        base_delay = float(self.config.executor.get("arxiv_rss_retry_base_seconds", self.config.executor.get("arxiv_retry_base_seconds", 10)))
-        max_delay = float(self.config.executor.get("arxiv_rss_retry_max_seconds", self.config.executor.get("arxiv_retry_max_seconds", 120)))
-        request_interval = float(self.config.executor.get("arxiv_rss_request_interval_seconds", self.config.executor.get("arxiv_request_interval_seconds", 3)))
-        cooldown_retries = max(0, int(self.config.executor.get("arxiv_rss_cooldown_retries", 1)))
-        cooldown_seconds = float(self.config.executor.get("arxiv_rss_cooldown_seconds", self.config.executor.get("arxiv_429_cooldown_seconds", 300)))
+    def _fetch_arxiv_rss_feed(self, category: str) -> Any:
         feed_url = f"https://rss.arxiv.org/atom/{category}"
-
-        attempt = 0
-        cooldowns_used = 0
-        while True:
-            attempt += 1
-            response = None
-            try:
-                _sleep_before_arxiv_rss_request(request_interval)
-                response = requests.get(feed_url, headers=headers, timeout=FETCH_TIMEOUT)
-                response.raise_for_status()
-                return feedparser.parse(response.content)
-            except requests.HTTPError as exc:
-                status_code = _status_code_from_error(exc, response)
-                should_retry = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
-                if not should_retry:
-                    raise
-                if attempt >= retries:
-                    if cooldowns_used < cooldown_retries:
-                        cooldowns_used += 1
-                        wait_seconds = _retry_after_seconds(response, cooldown_seconds)
-                        logger.warning(
-                            f"arXiv RSS is unavailable for {category} after {attempt} attempts. "
-                            f"Cooling down for {wait_seconds:.1f}s "
-                            f"({cooldowns_used}/{cooldown_retries})"
-                        )
-                        time.sleep(wait_seconds)
-                        attempt = 0
-                        continue
-                    raise
-                fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                wait_seconds = _retry_after_seconds(response, fallback_delay)
-                logger.warning(
-                    f"arXiv RSS returned HTTP {status_code} for {category}. "
-                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
-                )
-                time.sleep(wait_seconds)
-            except requests.RequestException as exc:
-                if attempt >= retries:
-                    if cooldowns_used < cooldown_retries:
-                        cooldowns_used += 1
-                        logger.warning(
-                            f"arXiv RSS request failed for {category} after {attempt} attempts: {exc}. "
-                            f"Cooling down for {cooldown_seconds:.1f}s "
-                            f"({cooldowns_used}/{cooldown_retries})"
-                        )
-                        time.sleep(cooldown_seconds)
-                        attempt = 0
-                        continue
-                    raise
-                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                logger.warning(
-                    f"arXiv RSS request failed for {category}: {exc}. "
-                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
-                )
-                time.sleep(wait_seconds)
+        content = self._arxiv_get_bytes(
+            feed_url,
+            cache_kind="rss",
+            cache_scope=datetime.now().date().isoformat(),
+        )
+        return feedparser.parse(content)
 
     def _retrieve_by_target_date(self, target_date: str) -> list[RawArxivResult]:
         from_stamp, to_stamp = build_announcement_window(target_date)
@@ -592,12 +849,6 @@ class ArxivRetriever(BaseRetriever):
         return results
 
     def _fetch_arxiv_query_page(self, query: str, start: int, max_results: int) -> tuple[list[RawArxivResult], int]:
-        retries = max(1, int(self.config.executor.get("arxiv_query_retries", 5)))
-        base_delay = float(self.config.executor.get("arxiv_retry_base_seconds", 10))
-        max_delay = float(self.config.executor.get("arxiv_retry_max_seconds", 120))
-        request_interval = float(self.config.executor.get("arxiv_request_interval_seconds", 3))
-        cooldown_retries = max(0, int(self.config.executor.get("arxiv_429_cooldown_retries", 1)))
-        cooldown_seconds = float(self.config.executor.get("arxiv_429_cooldown_seconds", 300))
         params = {
             "search_query": query,
             "start": start,
@@ -605,87 +856,37 @@ class ArxivRetriever(BaseRetriever):
             "sortBy": "submittedDate",
             "sortOrder": "descending",
         }
+        text = self._arxiv_get_text(
+            ARXIV_API_URL,
+            params=params,
+            cache_kind="api_query",
+        )
+        return _parse_atom_feed(text)
 
-        attempt = 0
-        cooldowns_used = 0
-        while True:
-            attempt += 1
-            response = None
-            try:
-                _sleep_before_arxiv_api_request(request_interval)
-                response = requests.get(
-                    ARXIV_API_URL,
-                    params=params,
-                    timeout=FETCH_TIMEOUT,
-                )
-                response.raise_for_status()
-                return _parse_atom_feed(response.text)
-            except requests.HTTPError as exc:
-                status_code = _status_code_from_error(exc, response)
-                should_retry = status_code == 429 or (status_code is not None and 500 <= status_code < 600)
-                if not should_retry:
-                    raise
-                if attempt >= retries:
-                    if status_code == 429 and cooldowns_used < cooldown_retries:
-                        cooldowns_used += 1
-                        wait_seconds = _retry_after_seconds(response, cooldown_seconds)
-                        logger.warning(
-                            f"arXiv API is still rate-limiting start={start} after {attempt} attempts. "
-                            f"Cooling down for {wait_seconds:.1f}s "
-                            f"({cooldowns_used}/{cooldown_retries})"
-                        )
-                        time.sleep(wait_seconds)
-                        attempt = 0
-                        continue
-                    raise
-                fallback_delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                wait_seconds = _retry_after_seconds(response, fallback_delay)
-                logger.warning(
-                    f"arXiv API returned HTTP {status_code} for start={start}. "
-                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
-                )
-                time.sleep(wait_seconds)
-            except requests.RequestException as exc:
-                if attempt >= retries:
-                    raise
-                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
-                logger.warning(
-                    f"arXiv API request failed for start={start}: {exc}. "
-                    f"Retrying in {wait_seconds:.1f}s ({attempt}/{retries})"
-                )
-                time.sleep(wait_seconds)
-
-        raise ArxivFetchIntegrityError(f"Failed to fetch arXiv page start={start}")
-
-    def _fetch_metadata_by_ids(self, ids: list[str], report: ArxivFetchReport) -> list[ArxivResult]:
+    def _fetch_metadata_by_ids(self, ids: list[str], report: ArxivFetchReport) -> list[RawArxivResult]:
         if not ids:
             report.fetched_ids = []
             report.fetched_count = 0
             return []
 
-        request_interval = max(0.0, float(self.config.executor.get("arxiv_request_interval_seconds", 3)))
-        client = arxiv.Client(num_retries=3, delay_seconds=request_interval)
-        raw_papers: list[ArxivResult] = []
+        raw_papers: list[RawArxivResult] = []
         returned_ids: list[str] = []
         batch_size = int(self.config.executor.get("arxiv_metadata_batch_size", 20))
 
         bar = tqdm(total=len(ids), desc="Fetching arXiv metadata")
         for index in range(0, len(ids), batch_size):
             batch_ids = ids[index:index + batch_size]
-            batch_results: list[ArxivResult] = []
-            attempts = 0
-            while attempts < 3:
-                try:
-                    search = arxiv.Search(id_list=batch_ids)
-                    batch_results = list(client.results(search))
-                    break
-                except Exception as exc:
-                    attempts += 1
-                    logger.warning(f"Failed to fetch arXiv metadata batch {index // batch_size} (attempt {attempts}/3): {exc}")
-                    if attempts < 3:
-                        time.sleep(min(2 ** attempts, 10))
-                    else:
-                        report.failed_batches.append(",".join(batch_ids))
+            batch_results: list[RawArxivResult] = []
+            try:
+                text = self._arxiv_get_text(
+                    ARXIV_API_URL,
+                    params={"id_list": ",".join(batch_ids)},
+                    cache_kind="api_metadata",
+                )
+                batch_results, _total = _parse_atom_feed(text)
+            except Exception as exc:
+                logger.warning(f"Failed to fetch arXiv metadata batch {index // batch_size}: {exc}")
+                report.failed_batches.append(",".join(batch_ids))
 
             raw_papers.extend(batch_results)
             batch_returned_ids = [extract_arxiv_id(result.entry_id) for result in batch_results]
@@ -764,17 +965,106 @@ class ArxivRetriever(BaseRetriever):
         if paper.full_text:
             return paper
 
+        paper_id = extract_arxiv_id(paper.url)
+        cached_text = self._read_full_text_cache(paper_id)
+        if cached_text:
+            paper.full_text = cached_text
+            return paper
+
         html_ref = SimpleNamespace(entry_id=paper.url, title=paper.title)
         pdf_ref = SimpleNamespace(pdf_url=paper.pdf_url, title=paper.title)
         tar_ref = SimpleNamespace(entry_id=paper.url, title=paper.title, source_url=lambda: f"https://arxiv.org/e-print/{extract_arxiv_id(paper.url)}")
 
-        full_text = extract_text_from_html(html_ref)
+        full_text = self.extract_text_from_html(html_ref)
         if full_text is None:
-            full_text = extract_text_from_pdf(pdf_ref)
+            full_text = self.extract_text_from_pdf(pdf_ref)
         if full_text is None:
-            full_text = extract_text_from_tar(tar_ref)
+            full_text = self.extract_text_from_tar(tar_ref)
+        if full_text:
+            self._write_full_text_cache(paper_id, full_text)
         paper.full_text = full_text
         return paper
+
+    def extract_text_from_html(self, paper: ArxivResult | RawArxivResult) -> str | None:
+        paper_id = extract_arxiv_id(paper.entry_id)
+        html_url = paper.entry_id.replace("/abs/", "/html/")
+        try:
+            html = self._arxiv_get_text(
+                html_url,
+                cache_kind="html_download",
+                paper_id=paper_id,
+                cache_success=False,
+            )
+            import trafilatura
+
+            text = trafilatura.extract(html, include_comments=False, include_tables=False)
+            if not text:
+                raise ValueError(f"No text extracted from {html_url}")
+            return text
+        except Exception as exc:
+            self._write_full_text_failure("fulltext_html", paper_id, exc)
+            logger.warning(f"HTML extraction failed for {paper.title}: {exc}")
+            return None
+
+    def extract_text_from_pdf(self, paper: ArxivResult | RawArxivResult) -> str | None:
+        if paper.pdf_url is None:
+            logger.warning(f"No PDF URL available for {paper.title}")
+            return None
+        paper_id = extract_arxiv_id(getattr(paper, "entry_id", paper.pdf_url))
+        try:
+            content = self._arxiv_get_bytes(
+                paper.pdf_url,
+                timeout=DOWNLOAD_TIMEOUT,
+                cache_kind="pdf_download",
+                paper_id=paper_id,
+                cache_success=False,
+            )
+            with TemporaryDirectory() as temp_dir:
+                path = os.path.join(temp_dir, "paper.pdf")
+                Path(path).write_bytes(content)
+                return _run_with_hard_timeout(
+                    extract_markdown_from_pdf,
+                    (path,),
+                    timeout=PDF_EXTRACT_TIMEOUT,
+                    operation="PDF extraction",
+                    paper_title=paper.title,
+                )
+        except Exception as exc:
+            self._write_full_text_failure("fulltext_pdf", paper_id, exc)
+            logger.warning(f"PDF extraction failed for {paper.title}: {exc}")
+            return None
+
+    def extract_text_from_tar(self, paper: ArxivResult | RawArxivResult) -> str | None:
+        source_url = paper.source_url()
+        if source_url is None:
+            logger.warning(f"No source URL available for {paper.title}")
+            return None
+        paper_id = extract_arxiv_id(paper.entry_id)
+        try:
+            content = self._arxiv_get_bytes(
+                source_url,
+                timeout=DOWNLOAD_TIMEOUT,
+                cache_kind="source_download",
+                paper_id=paper_id,
+                cache_success=False,
+            )
+            with TemporaryDirectory() as temp_dir:
+                path = os.path.join(temp_dir, "paper.tar.gz")
+                Path(path).write_bytes(content)
+                file_contents = _run_with_hard_timeout(
+                    extract_tex_code_from_tar,
+                    (path, paper_id),
+                    timeout=TAR_EXTRACT_TIMEOUT,
+                    operation="Tar extraction",
+                    paper_title=paper.title,
+                )
+                if not file_contents or "all" not in file_contents or not file_contents["all"]:
+                    raise ValueError("Main tex file not found.")
+                return file_contents["all"]
+        except Exception as exc:
+            self._write_full_text_failure("fulltext_source", paper_id, exc)
+            logger.warning(f"Tar extraction failed for {paper.title}: {exc}")
+            return None
 
     def convert_to_paper(self, raw_paper: ArxivResult | RawArxivResult) -> Paper:
         title = raw_paper.title
@@ -799,7 +1089,22 @@ class ArxivRetriever(BaseRetriever):
 def extract_text_from_html(paper: ArxivResult | RawArxivResult) -> str | None:
     html_url = paper.entry_id.replace("/abs/", "/html/")
     try:
-        return _extract_text_from_html_worker(html_url)
+        response = _perform_arxiv_request(
+            5,
+            lambda: requests.get(
+                html_url,
+                headers={"User-Agent": DEFAULT_ARXIV_USER_AGENT},
+                proxies=_default_arxiv_proxies(),
+                timeout=FETCH_TIMEOUT,
+            ),
+        )
+        response.raise_for_status()
+        import trafilatura
+
+        text = trafilatura.extract(response.text, include_comments=False, include_tables=False)
+        if not text:
+            raise ValueError(f"No text extracted from {html_url}")
+        return text
     except Exception as exc:
         logger.warning(f"HTML extraction failed for {paper.title}: {exc}")
         return None

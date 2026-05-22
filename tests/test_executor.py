@@ -333,7 +333,7 @@ def test_run_no_papers_send_empty_true(config, monkeypatch):
     assert "text/html" in body
 
 
-def test_run_shortlists_before_fetching_full_text_and_reranks(config, monkeypatch):
+def test_run_fetches_full_text_only_after_final_selection(config, monkeypatch):
     from omegaconf import open_dict
 
     from tests.canned_responses import make_sample_paper, make_stub_openai_client, make_stub_zotero_client
@@ -442,18 +442,11 @@ def test_run_shortlists_before_fetching_full_text_and_reranks(config, monkeypatc
     assert rerank_calls[0][3] is None
     assert rerank_calls[0][4] == ["Paper A", "Paper B", "Paper C"]
     assert rerank_calls[0][5] == [None, None, None]
-    assert enriched == ["Paper A", "Paper B", "Paper C"]
-    assert sorted(tldr_calls) == ["Paper A", "Paper B", "Paper C"]
-    assert sorted(tldr_en_calls) == ["Paper A", "Paper B", "Paper C"]
-    assert rerank_calls[1][0] is False
-    assert rerank_calls[1][1] is False
-    assert rerank_calls[1][2] is True
-    assert rerank_calls[1][3] is None
-    assert rerank_calls[1][4] == ["Paper A", "Paper B", "Paper C"]
-    assert rerank_calls[1][5] == ["FULL Paper A", "FULL Paper B", "FULL Paper C"]
-    assert rerank_calls[1][6] == ["ZH Paper A", "ZH Paper B", "ZH Paper C"]
-    assert rerank_calls[1][7] == ["EN Paper A", "EN Paper B", "EN Paper C"]
-    assert affiliation_calls == ["Paper B", "Paper C"]
+    assert len(rerank_calls) == 1
+    assert enriched == ["Paper A", "Paper B"]
+    assert sorted(tldr_calls) == ["Paper A", "Paper B"]
+    assert sorted(tldr_en_calls) == ["Paper A", "Paper B"]
+    assert affiliation_calls == ["Paper A", "Paper B"]
 
 
 def test_executor_defaults_longlist_to_one_point_five_x_max(config):
@@ -547,6 +540,64 @@ def test_run_date_range_runs_each_day_without_email_by_default(config):
     assert [call[1] for call in calls] == [False, False, False]
     assert [result.target_date for result in results] == ["2026-05-01", "2026-05-02", "2026-05-03"]
     assert config.executor.target_date is None
+
+
+def test_run_date_range_cools_down_between_processed_dates(config, monkeypatch):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.historical_mode = "export_only"
+        config.executor.historical_day_cooldown_seconds = 12
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    sleeps = []
+    calls = []
+
+    def run_single_day(corpus, *, send_email_enabled=True):
+        calls.append(config.executor.target_date)
+        return SimpleNamespace(target_date=config.executor.target_date, skipped=False, error=None)
+
+    executor._run_single_day = run_single_day
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    executor._run_date_range(["2026-05-01", "2026-05-02", "2026-05-03"], [])
+
+    assert calls == ["2026-05-01", "2026-05-02", "2026-05-03"]
+    assert sleeps == [12, 12]
+
+
+def test_run_single_day_sends_error_email_on_failure(config, monkeypatch):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.error_email_enabled = True
+
+    sent = []
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.retrievers = {
+        "arxiv": SimpleNamespace(
+            last_fetch_report=SimpleNamespace(summary=lambda: "source=arxiv mode=rss expected=1 fetched=0")
+        )
+    }
+
+    def broken_impl(corpus, *, send_email_enabled=True):
+        raise RuntimeError("arxiv unavailable")
+
+    executor._run_single_day_impl = broken_impl
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda config, body, subject=None: sent.append((subject, body)),
+    )
+
+    with pytest.raises(RuntimeError, match="arxiv unavailable"):
+        executor._run_single_day([])
+
+    assert sent
+    assert sent[0][0] == "arXiv Daily failed: latest"
+    assert "arxiv unavailable" in sent[0][1]
+    assert "source=arxiv mode=rss expected=1 fetched=0" in sent[0][1]
 
 
 def test_run_date_range_can_send_email(config):

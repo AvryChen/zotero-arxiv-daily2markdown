@@ -1,7 +1,10 @@
 from loguru import logger
 from pyzotero import zotero
 from omegaconf import DictConfig, ListConfig, OmegaConf
+import html
 import os
+import time
+import traceback
 from .utils import glob_match, to_bool
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
@@ -153,6 +156,50 @@ class Executor:
             for lang in ("zh", "en")
         )
 
+    def _error_email_enabled(self) -> bool:
+        return to_bool(self.config.executor.get("error_email_enabled", True))
+
+    def _last_fetch_report_summary(self) -> str:
+        summaries = []
+        for source, retriever in self.retrievers.items():
+            report = getattr(retriever, "last_fetch_report", None)
+            if report is not None:
+                summaries.append(f"{source}: {report.summary()}")
+        return "\n".join(summaries) if summaries else "No arXiv fetch report was recorded."
+
+    def _send_error_email(self, *, stage: str, exc: Exception, target_date: str | None = None) -> None:
+        if not self._error_email_enabled():
+            return
+
+        mode = target_date or self.config.executor.get("target_date") or "latest"
+        configured_categories = self.config.source.arxiv.category
+        if isinstance(configured_categories, str):
+            categories = configured_categories
+        else:
+            categories = ", ".join(str(category) for category in configured_categories)
+        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        report_summary = self._last_fetch_report_summary()
+        body = f"""
+        <html>
+          <body>
+            <h2>arXiv Daily failed</h2>
+            <p><strong>Stage:</strong> {html.escape(stage)}</p>
+            <p><strong>Target date/mode:</strong> {html.escape(str(mode))}</p>
+            <p><strong>Categories:</strong> {html.escape(categories)}</p>
+            <p><strong>Error type:</strong> {html.escape(type(exc).__name__)}</p>
+            <p><strong>Error:</strong> {html.escape(str(exc))}</p>
+            <h3>Latest fetch report</h3>
+            <pre>{html.escape(report_summary)}</pre>
+            <h3>Traceback</h3>
+            <pre>{html.escape(trace)}</pre>
+          </body>
+        </html>
+        """
+        try:
+            send_email(self.config, body, subject=f"arXiv Daily failed: {mode}")
+        except Exception as email_exc:
+            logger.warning(f"Failed to send error alert email: {email_exc}")
+
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
         zot = zotero.Zotero(self.config.zotero.user_id, 'user', self.config.zotero.api_key)
@@ -204,6 +251,13 @@ class Executor:
         return corpus
 
     def _run_single_day(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
+        try:
+            return self._run_single_day_impl(corpus, send_email_enabled=send_email_enabled)
+        except Exception as exc:
+            self._send_error_email(stage="single-day run", exc=exc)
+            raise
+
+    def _run_single_day_impl(self, corpus: list[CorpusPaper], *, send_email_enabled: bool = True) -> DailyRunResult:
         target_date = self.config.executor.get("target_date")
         result = DailyRunResult(target_date=str(target_date) if target_date else None)
         all_papers = []
@@ -222,21 +276,6 @@ class Executor:
         if len(all_papers) > 0:
             logger.info("Reranking papers using title and abstract...")
             reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
-            longlist_size = self._resolve_longlist_size()
-            reranked_papers = reranked_papers[:longlist_size]
-
-            if reranked_papers:
-                logger.info(f"Shortlisted {len(reranked_papers)} papers for the longlist. Fetching HTML/PDF and generating TLDRs for second-pass ranking...")
-                self._enrich_selected_papers(reranked_papers)
-                self._generate_longlist_summaries(reranked_papers)
-                logger.info("Reranking shortlisted papers using English TLDR...")
-                reranked_papers = self.reranker.rerank(
-                    reranked_papers,
-                    corpus,
-                    include_full_text=False,
-                    include_english_tldr=True,
-                )
-
             threshold = self.config.executor.get("score_threshold", 3.0)
             reranked_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
             reranked_papers = reranked_papers[:self.config.executor.max_paper_num]
@@ -249,7 +288,8 @@ class Executor:
             else:
                 logger.info(f"Selected {len(reranked_papers)} papers above threshold {threshold}")
 
-            logger.info("Generating affiliations...")
+            logger.info("Fetching full text and generating summaries for final selected papers...")
+            self._enrich_selected_papers(reranked_papers)
             for p in tqdm(reranked_papers):
                 p.generate_tldr(self.openai_client, self.config.llm)
                 p.generate_english_tldr(self.openai_client, self.config.llm)
@@ -323,20 +363,28 @@ class Executor:
         results = []
 
         try:
-            for target_date in dates:
+            for index, target_date in enumerate(dates):
                 logger.info(f"Running historical arXiv daily for {target_date}")
                 self.config.executor.target_date = target_date
+                processed_date = False
                 if skip_existing and self._hugo_outputs_exist(target_date):
                     logger.info(f"Skipping {target_date}: Hugo output already exists.")
                     results.append(DailyRunResult(target_date=target_date, skipped=True))
                     continue
                 try:
                     results.append(self._run_single_day(corpus, send_email_enabled=send_email_enabled))
+                    processed_date = True
                 except Exception as exc:
                     logger.exception(f"Failed to run arXiv daily for {target_date}")
                     results.append(DailyRunResult(target_date=target_date, skipped=True, error=str(exc)))
                     if not continue_on_error:
                         raise
+                    processed_date = True
+                if processed_date and index < len(dates) - 1:
+                    cooldown_seconds = max(0.0, float(self.config.executor.get("historical_day_cooldown_seconds", 600)))
+                    if cooldown_seconds > 0:
+                        logger.info(f"Cooling down for {cooldown_seconds:.1f}s before the next historical date")
+                        time.sleep(cooldown_seconds)
         finally:
             self.config.executor.target_date = original_target_date
 

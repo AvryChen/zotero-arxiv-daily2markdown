@@ -65,13 +65,22 @@ executor:
   cross_validation_mode: warn # dailyarxiv 交叉验证不一致时的处理方式。示例：'warn' 或 'fail'
   arxiv_page_size: 800 # 指定日期抓取时 arXiv API 每页请求数量。
   arxiv_query_retries: 5 # 指定日期抓取时，arXiv API 分页请求遇到 429 或 5xx 时的最大尝试次数。
-  arxiv_request_interval_seconds: 3 # arXiv API 请求之间的最小间隔秒数，遵守官方限速建议。
+  arxiv_user_agent: "arXiv Daily: Nickelate Superconductors (support@jxchen.org)" # arXiv 请求使用的 User-Agent，包含项目名和联系邮箱。
+  arxiv_proxy_enabled: false # 是否让 arXiv 请求走代理；默认直连。
+  arxiv_proxy_url: null # arXiv 请求代理地址。V2rayN HTTP 示例：http://127.0.0.1:10809；SOCKS 示例：socks5h://127.0.0.1:10808
+  arxiv_proxy_no_proxy: null # 可选 no_proxy 规则；设置后传给 requests 的代理配置。
+  arxiv_request_interval_seconds: 5 # 所有 arXiv 请求之间的最小间隔秒数，保守遵守官方限速建议。
   arxiv_retry_base_seconds: 10 # arXiv API 分页请求重试的基础等待秒数，会按指数退避增长。
   arxiv_retry_max_seconds: 120 # arXiv API 分页请求单次重试等待的最大秒数。
   arxiv_429_cooldown_seconds: 300 # 多次遇到 429 后额外冷却等待秒数；如果响应含 Retry-After 则优先使用响应值。
   arxiv_429_cooldown_retries: 1 # 多次遇到 429 后额外冷却重试轮数。
+  arxiv_failure_cooldown_seconds: 1800 # arXiv 连续失败后的保护性冷却秒数。
   arxiv_rss_retries: 5 # 最新论文 RSS 请求遇到连接超时、429 或 5xx 时的最大尝试次数。
-  arxiv_rss_request_interval_seconds: 3 # 最新论文 RSS 请求之间的最小间隔秒数。
+  arxiv_rss_request_interval_seconds: 5 # 最新论文 RSS 请求之间的最小间隔秒数。
   arxiv_rss_cooldown_seconds: 300 # RSS 连续失败后额外冷却等待秒数。
   arxiv_rss_cooldown_retries: 1 # RSS 连续失败后额外冷却重试轮数。
   arxiv_metadata_batch_size: 20 # 从 RSS 获取 ID 后，批量查询 arXiv 元数据时的批大小。
+  historical_day_cooldown_seconds: 600 # 批量回溯时，每个已处理日期和下个日期之间的冷却秒数。
+  arxiv_cache_enabled: true # 是否启用 arXiv RSS、API 和全文提取结果的本地缓存。
+  arxiv_cache_dir: outputs/cache/arxiv # arXiv 本地缓存目录。
+  error_email_enabled: true # 是否在 arXiv 抓取异常、缺数或回溯单日失败时发送告警邮件。

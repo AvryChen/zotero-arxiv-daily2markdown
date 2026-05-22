@@ -44,6 +44,8 @@ def _base_config():
                 "executor.reranker=api",
                 "executor.debug=false",
                 "executor.send_empty=false",
+                "executor.arxiv_cache_enabled=false",
+                "executor.historical_day_cooldown_seconds=0",
             ],
         )
     return cfg

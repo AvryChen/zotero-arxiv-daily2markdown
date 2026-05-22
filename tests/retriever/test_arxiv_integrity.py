@@ -71,6 +71,8 @@ def _cond_mat_retriever(config, *, strict=True, cross_validate=False, mode="warn
         config.executor.cross_validate_dailyarxiv = cross_validate
         config.executor.cross_validation_mode = mode
         config.executor.arxiv_request_interval_seconds = 0
+        config.executor.arxiv_query_retries = 1
+        config.executor.arxiv_retry_base_seconds = 0
         config.executor.arxiv_429_cooldown_retries = 0
     return ArxivRetriever(config)
 
@@ -230,19 +232,13 @@ def test_metadata_lookup_reports_missing_requested_ids(config, monkeypatch):
     retriever = _cond_mat_retriever(config, strict=True)
     report = ArxivFetchReport(mode="rss", expected_count=3, feed_ids=["2605.00001v1", "2605.00002v1", "2605.00003v1"])
 
-    class FakeClient:
-        def __init__(self, **kwargs):
-            pass
+    def fake_get(url, **kwargs):
+        assert url == ARXIV_API_URL
+        assert kwargs["headers"]["User-Agent"] == config.executor.arxiv_user_agent
+        assert kwargs["params"]["id_list"] == ",".join(report.feed_ids)
+        return _response(_atom_feed(["2605.00001v1", "2605.00002v1"], total=2))
 
-        def results(self, search):
-            return iter(
-                [
-                    SimpleNamespace(entry_id="http://arxiv.org/abs/2605.00001v1"),
-                    SimpleNamespace(entry_id="http://arxiv.org/abs/2605.00002v1"),
-                ]
-            )
-
-    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever.requests, "get", fake_get)
     retriever._fetch_metadata_by_ids(report.feed_ids, report)
 
     assert report.missing_ids == ["2605.00003v1"]
