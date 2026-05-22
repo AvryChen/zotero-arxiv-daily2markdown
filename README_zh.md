@@ -263,6 +263,18 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
   executor.end_date="2026-05-07"
 ```
 
+迁移旧版 Hugo 日报，把早期没有 capture 产物的内容改写成新格式：
+
+```bash
+uv run python scripts/migrate_legacy_hugo_capture.py \
+  --content-dir /path/to/arxiv-daily/content \
+  --output-dir data/capture \
+  --cutoff-date 2026-04-30 \
+  --hugo-output-dir /path/to/arxiv-daily/content
+```
+
+迁移脚本只把旧 Hugo Markdown 当作候选来源。对每个旧 arXiv ID，它会把旧版 AI 生成的 TL;DR/summary 当作轻量 `abstract`，交给主流程同一个 LLM 领域判定器做 accept/reject；在 LLM 判定 accept 之前不会访问 arXiv 抓 metadata 或全文。只有 accepted 论文才会触发 arXiv 全文抓取，并生成 capture TXT/meta。当天没有 accepted 论文时，会删除该日期的中英文 Hugo 日报。脚本修改 capture 或 Hugo 文件前，会先在 `data/capture/backups/legacy_hugo_capture_<timestamp>/` 下备份旧内容。
+
 回溯一个日期区间，并为每天发送邮件：
 
 ```bash

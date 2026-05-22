@@ -263,6 +263,18 @@ uv run python src/zotero_arxiv_daily2markdown/main.py \
   executor.end_date="2026-05-07"
 ```
 
+Legacy Hugo migration for old posts that were generated before capture artifacts existed:
+
+```bash
+uv run python scripts/migrate_legacy_hugo_capture.py \
+  --content-dir /path/to/arxiv-daily/content \
+  --output-dir data/capture \
+  --cutoff-date 2026-04-30 \
+  --hugo-output-dir /path/to/arxiv-daily/content
+```
+
+The migration treats old Hugo Markdown as a candidate source only. For each legacy arXiv ID, it reuses the old generated TL;DR/summary as the lightweight `abstract` input to the same LLM domain classifier used by the main workflow; it does not fetch arXiv metadata or full text before the LLM accept/reject decision. Only accepted papers trigger arXiv full-text fetching and capture TXT/meta output. Dates with no accepted papers have their old bilingual Hugo posts removed. The script creates a backup under `data/capture/backups/legacy_hugo_capture_<timestamp>/` before changing capture or Hugo files.
+
 Historical backfill with email for each day:
 
 ```bash
