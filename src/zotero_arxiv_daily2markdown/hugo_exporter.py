@@ -91,7 +91,12 @@ def build_empty_notice_hugo_artifacts(config: DictConfig) -> HugoExportArtifacts
 def _render_empty_notice_markdown(*, lang: str, date_str: str, post_date_time: str, topic: str) -> str:
     is_zh = lang == "zh"
     title = "昨天没有新论文" if is_zh else f"arXiv Daily: no new papers for {date_str}"
-    notice = "昨天没有新论文。" if is_zh else "No new papers yesterday."
+    next_day = _next_day_label(date_str)
+    body = (
+        _empty_notice_body_zh(date_str=date_str, next_day=next_day, topic=topic)
+        if is_zh
+        else _empty_notice_body_en(date_str=date_str, next_day=next_day, topic=topic)
+    )
     return "\n".join(
         [
             "---",
@@ -103,11 +108,157 @@ def _render_empty_notice_markdown(*, lang: str, date_str: str, post_date_time: s
             EMPTY_NOTICE_MARKER,
             "---",
             "",
-            "> **今日速览**：" if is_zh else "> **Daily Overview**:",
-            f"> {notice}",
-            "",
+            _empty_notice_styles(),
+            body,
         ]
     )
+
+
+def _next_day_label(date_str: str) -> str:
+    try:
+        return (datetime.fromisoformat(date_str).date() + timedelta(days=1)).isoformat()
+    except ValueError:
+        return "the next day"
+
+
+def _empty_notice_styles() -> str:
+    return """<style>
+.arxiv-empty-notice {
+  margin: 1.5rem 0 2.5rem;
+  color: var(--primary, #1d1d1f);
+}
+.arxiv-empty-notice .notice-hero {
+  border: 1px solid var(--border, rgba(120, 120, 120, .24));
+  border-radius: 8px;
+  background: var(--entry, var(--theme, #fff));
+  padding: clamp(1.25rem, 3vw, 2rem);
+}
+.arxiv-empty-notice h2 {
+  margin: 0 0 .65rem;
+  font-size: clamp(1.45rem, 3vw, 2.15rem);
+  line-height: 1.18;
+  letter-spacing: 0;
+}
+.arxiv-empty-notice p {
+  margin: 0;
+  color: var(--secondary, #5f6368);
+  line-height: 1.75;
+}
+.arxiv-empty-notice .notice-date {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  margin-bottom: .9rem;
+  font-size: .86rem;
+  color: var(--secondary, #5f6368);
+}
+.arxiv-empty-notice .notice-date::before {
+  content: "";
+  width: .62rem;
+  height: .62rem;
+  border-radius: 50%;
+  background: #3f7f8f;
+  box-shadow: 0 0 0 3px rgba(63, 127, 143, .18);
+}
+.arxiv-empty-notice .notice-sections {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.arxiv-empty-notice .notice-section {
+  border-top: 1px solid var(--border, rgba(120, 120, 120, .24));
+  padding-top: 1rem;
+}
+.arxiv-empty-notice h3 {
+  margin: 0 0 .45rem;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+.arxiv-empty-notice ol,
+.arxiv-empty-notice ul {
+  margin: .4rem 0 0 1.25rem;
+  padding: 0;
+  color: var(--secondary, #5f6368);
+  line-height: 1.7;
+}
+.arxiv-empty-notice li + li {
+  margin-top: .35rem;
+}
+.arxiv-empty-notice code {
+  font-size: .88em;
+}
+@media (max-width: 640px) {
+  .arxiv-empty-notice .notice-hero {
+    padding: 1.1rem;
+  }
+}
+</style>"""
+
+
+def _empty_notice_body_zh(*, date_str: str, next_day: str, topic: str) -> str:
+    return f"""<section class="arxiv-empty-notice" aria-labelledby="empty-notice-title">
+  <div class="notice-hero">
+    <div class="notice-date">公告日：{date_str}；通常在北京时间 {next_day} 生成</div>
+    <h2 id="empty-notice-title">昨天没有新的命中论文</h2>
+    <p>这不是说 arXiv 昨天没有论文，而是说在本站关注的 <strong>{topic}</strong> 主题下，昨天公告的候选论文经过相似度排序和领域判定后，没有达到收录标准。</p>
+  </div>
+
+  <div class="notice-sections">
+    <section class="notice-section">
+      <h3>为什么今天看到的是昨天的论文？</h3>
+      <p>arXiv 的每日列表按“公告日”组织，当天页面在处理过程中可能还不完整。本站选择在北京时间每天处理前一天的公告日，这样候选列表已经收束，结果更稳定，也避免把仍在变化的当天列表提前展示给读者。</p>
+    </section>
+
+    <section class="notice-section">
+      <h3>抓取与筛选流程</h3>
+      <ol>
+        <li>读取目标公告日的 arXiv catchup 页面，纳入 <code>New submissions</code>、<code>Cross-lists</code> 和 <code>Replacements</code>。</li>
+        <li>解析论文编号、标题、作者、摘要、分类和 PDF 链接，先不下载全文。</li>
+        <li>用标题和摘要与本领域参考语料计算相似度，形成 longlist。</li>
+        <li>让 AI 领域判定器复核 longlist，只接受明确属于 <strong>{topic}</strong> 且置信度达标的论文。</li>
+        <li>只有命中的论文才抓取 HTML、PDF 或 TeX 源文件，并生成 TXT、元数据和网页摘要。</li>
+      </ol>
+    </section>
+
+    <section class="notice-section">
+      <h3>今天为什么没有论文条目？</h3>
+      <p>可能是昨天没有相关候选，也可能是有候选但相关度不足、领域判定为 reject/uncertain，或置信度没有达到阈值。这些论文不会进入日报正文，以免把弱相关内容推给读者。</p>
+    </section>
+  </div>
+</section>"""
+
+
+def _empty_notice_body_en(*, date_str: str, next_day: str, topic: str) -> str:
+    return f"""<section class="arxiv-empty-notice" aria-labelledby="empty-notice-title">
+  <div class="notice-hero">
+    <div class="notice-date">Announcement date: {date_str}; usually generated on {next_day} Beijing time</div>
+    <h2 id="empty-notice-title">No newly matched papers yesterday</h2>
+    <p>This does not mean arXiv had no papers yesterday. It means the papers announced yesterday did not produce an accepted match for this site's <strong>{topic}</strong> scope after relevance ranking and domain review.</p>
+  </div>
+
+  <div class="notice-sections">
+    <section class="notice-section">
+      <h3>Why does today's update process yesterday's papers?</h3>
+      <p>arXiv daily lists are organized by announcement date, and the current day's page can still change while submissions are being processed. This site processes the previous announcement date each day in Beijing time so the candidate list is closed, stable, and less likely to show partial results.</p>
+    </section>
+
+    <section class="notice-section">
+      <h3>How papers are collected and filtered</h3>
+      <ol>
+        <li>Read the arXiv catchup page for the target announcement date, including <code>New submissions</code>, <code>Cross-lists</code>, and <code>Replacements</code>.</li>
+        <li>Parse arXiv IDs, titles, authors, abstracts, categories, and PDF links without downloading full text first.</li>
+        <li>Rank candidates by title and abstract similarity against the reference corpus for this research area.</li>
+        <li>Ask the AI domain classifier to review the longlist, accepting only papers clearly in scope for <strong>{topic}</strong> with sufficient confidence.</li>
+        <li>Fetch HTML, PDF, or TeX source only for accepted papers, then create TXT files, metadata, and web summaries.</li>
+      </ol>
+    </section>
+
+    <section class="notice-section">
+      <h3>Why are there no paper entries today?</h3>
+      <p>There may have been no relevant candidates, or there may have been candidates whose similarity score, domain decision, or confidence was not strong enough. Those papers are left out of the public daily post to keep the feed focused.</p>
+    </section>
+  </div>
+</section>"""
 
 
 def export_empty_notice_to_hugo(config: DictConfig) -> HugoExportArtifacts | None:

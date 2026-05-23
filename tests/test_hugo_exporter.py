@@ -129,7 +129,14 @@ def test_export_empty_notice_and_cleanup_only_marked_posts(tmp_path):
     assert artifacts.date_str == "2026-05-21"
     assert "arxiv_empty_notice: true" in zh_text
     assert "昨天没有新论文" in zh_text
-    assert "No new papers yesterday" in en_text
+    assert "为什么今天看到的是昨天的论文？" in zh_text
+    assert "New submissions" in zh_text
+    assert "Cross-lists" in zh_text
+    assert "Replacements" in zh_text
+    assert "通常在北京时间 2026-05-22 生成" in zh_text
+    assert "No newly matched papers yesterday" in en_text
+    assert "Why does today's update process yesterday's papers?" in en_text
+    assert "usually generated on 2026-05-22 Beijing time" in en_text
 
     removed = cleanup_empty_hugo_notices(config)
 
