@@ -23,6 +23,7 @@ from .hugo_exporter import (
 )
 from .capture_exporter import export_capture_artifacts
 from .domain_classifier import classify_domain_papers
+from .reranker.base import PreparedRerankCorpus
 from openai import OpenAI
 from tqdm import tqdm
 import math
@@ -109,6 +110,7 @@ class Executor:
             source: get_retriever_cls(source)(config) for source in config.executor.source
         }
         self.reranker = get_reranker_cls(config.executor.reranker)(config)
+        self._prepared_rerank_corpus: PreparedRerankCorpus | None = None
         self.openai_client = OpenAI(api_key=config.llm.api.key, base_url=config.llm.api.base_url)
 
     def _set_retriever_full_text_mode(self, enabled: bool) -> None:
@@ -161,6 +163,22 @@ class Executor:
 
     def _capture_enabled(self) -> bool:
         return to_bool(self.config.get("capture", {}).get("enabled", False))
+
+    def _prepare_rerank_corpus(self, corpus: list[CorpusPaper]) -> PreparedRerankCorpus | None:
+        reranker = getattr(self, "reranker", None)
+        if reranker is None or not getattr(reranker, "supports_prepared_corpus", False):
+            return None
+        logger.info("Preparing rerank corpus embeddings once for this run...")
+        return reranker.prepare_corpus(corpus)
+
+    def _rerank_papers(self, candidates: list[Paper], corpus: list[CorpusPaper]) -> list[Paper]:
+        kwargs = {
+            "include_full_text": False,
+        }
+        prepared_corpus = getattr(self, "_prepared_rerank_corpus", None)
+        if prepared_corpus is not None and getattr(self.reranker, "supports_prepared_corpus", False):
+            kwargs["prepared_corpus"] = prepared_corpus
+        return self.reranker.rerank(candidates, corpus, **kwargs)
 
     def _run_date_for_outputs(self) -> str:
         target_date = self.config.executor.get("target_date")
@@ -263,7 +281,7 @@ class Executor:
         domain_decisions: list[DomainDecision] = []
         if len(all_papers) > 0:
             logger.info("Reranking papers using title and abstract...")
-            reranked_papers = self.reranker.rerank(all_papers, corpus, include_full_text=False)
+            reranked_papers = self._rerank_papers(all_papers, corpus)
             threshold = self.config.executor.get("score_threshold", 3.0)
             threshold_papers = [p for p in reranked_papers if p.score is not None and p.score >= threshold]
             longlist_papers = threshold_papers[:self._resolve_longlist_size()]
@@ -613,11 +631,15 @@ class Executor:
             logger.error(f"No zotero papers found. Please check your zotero settings:\n{self.config.zotero}")
             return
 
-        if dates is not None:
-            logger.info(f"Running historical arXiv daily from {dates[0]} to {dates[-1]}")
-            return self._run_date_range(dates, corpus)
+        self._prepared_rerank_corpus = self._prepare_rerank_corpus(corpus)
+        try:
+            if dates is not None:
+                logger.info(f"Running historical arXiv daily from {dates[0]} to {dates[-1]}")
+                return self._run_date_range(dates, corpus)
 
-        if self.config.executor.get("target_date"):
-            return self._run_single_day(corpus, send_email_enabled=True)
+            if self.config.executor.get("target_date"):
+                return self._run_single_day(corpus, send_email_enabled=True)
 
-        return self._run_default_daily(corpus)
+            return self._run_default_daily(corpus)
+        finally:
+            self._prepared_rerank_corpus = None

@@ -611,6 +611,85 @@ def test_run_date_range_runs_each_day_without_email_by_default(config):
     assert config.executor.target_date is None
 
 
+def test_run_prepares_rerank_corpus_once_for_historical_range(config):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.executor.start_date = "2026-05-01"
+        config.executor.end_date = "2026-05-03"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    corpus = [CorpusPaper(title="C", abstract="A", added_date=datetime(2026, 1, 1), paths=[])]
+    prepared = object()
+    prepare_calls = []
+    range_calls = []
+
+    class StubReranker:
+        supports_prepared_corpus = True
+
+        def prepare_corpus(self, items):
+            prepare_calls.append(list(items))
+            return prepared
+
+    executor.reranker = StubReranker()
+    executor.fetch_zotero_corpus = lambda: corpus
+    executor.filter_corpus = lambda items: items
+
+    def run_date_range(dates, items):
+        range_calls.append((dates, items, executor._prepared_rerank_corpus))
+        return []
+
+    executor._run_date_range = run_date_range
+
+    executor.run()
+
+    assert prepare_calls == [corpus]
+    assert range_calls == [(["2026-05-01", "2026-05-02", "2026-05-03"], corpus, prepared)]
+    assert executor._prepared_rerank_corpus is None
+
+
+def test_build_single_day_uses_prepared_rerank_corpus_when_available(config):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.score_threshold = 99.0
+        config.capture.enabled = False
+
+    paper = make_sample_paper(title="Candidate")
+    prepared = object()
+    rerank_calls = []
+
+    class StubRetriever:
+        fetch_full_text_during_retrieval = False
+
+        def retrieve_papers(self):
+            return [paper]
+
+    class StubReranker:
+        supports_prepared_corpus = True
+
+        def rerank(self, candidates, corpus, *, include_full_text=True, prepared_corpus=None, **kwargs):
+            rerank_calls.append((include_full_text, prepared_corpus, list(candidates), list(corpus)))
+            candidates[0].score = 1.0
+            return candidates
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.retrievers = {"arxiv": StubRetriever()}
+    executor.reranker = StubReranker()
+    executor._prepared_rerank_corpus = prepared
+    executor.openai_client = object()
+
+    corpus = [CorpusPaper(title="C", abstract="A", added_date=datetime(2026, 1, 1), paths=[])]
+    artifacts = executor._build_single_day_artifacts(corpus)
+
+    assert artifacts.result.retrieved_count == 1
+    assert rerank_calls == [(False, prepared, [paper], corpus)]
+
+
 def test_run_date_range_cools_down_between_processed_dates(config, monkeypatch):
     from omegaconf import open_dict
 

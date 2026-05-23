@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from zotero_arxiv_daily2markdown.reranker.base import BaseReranker, get_reranker_cls
+from zotero_arxiv_daily2markdown.reranker.base import BaseReranker, PreparedRerankCorpus, get_reranker_cls
 from tests.canned_responses import make_sample_paper, make_sample_corpus
 
 
@@ -102,6 +102,32 @@ def test_rerank_can_exclude_full_text():
 
     assert captured["candidate_texts"] == ["P\n\nABSTRACT"]
     assert captured["corpus_texts"] == [corpus[0].ranking_text()]
+
+
+def test_rerank_reuses_prepared_corpus_without_rebuilding_corpus_texts():
+    corpus = make_sample_corpus(2)
+    papers = [make_sample_paper(title="P")]
+    calls = []
+
+    class PreparedAwareReranker(BaseReranker):
+        def get_similarity_score(self, s1, s2):
+            raise AssertionError("prepared corpus path should be used")
+
+        def get_similarity_score_to_prepared_corpus(
+            self,
+            s1,
+            prepared_corpus: PreparedRerankCorpus,
+        ):
+            calls.append((s1, prepared_corpus.texts))
+            return np.array([[0.5, 0.5]])
+
+    reranker = PreparedAwareReranker(None)
+    prepared = reranker.prepare_corpus(corpus)
+
+    ranked = reranker.rerank(papers, corpus, include_full_text=False, prepared_corpus=prepared)
+
+    assert ranked[0].score is not None
+    assert calls == [(["P\n\nThis paper explores a novel approach to widget engineering."], prepared.texts)]
 
 
 def test_rerank_can_truncate_full_text():

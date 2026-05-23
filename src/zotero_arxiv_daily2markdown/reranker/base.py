@@ -1,13 +1,36 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from omegaconf import DictConfig
 from ..protocol import Paper, CorpusPaper
 import numpy as np
+from typing import Any
 from typing import Type
 
 
+@dataclass
+class PreparedRerankCorpus:
+    texts: list[str]
+    time_decay_weight: np.ndarray
+    embeddings: Any = None
+
+
 class BaseReranker(ABC):
+    supports_prepared_corpus = True
+
     def __init__(self, config:DictConfig):
         self.config = config
+
+    def prepare_corpus(self, corpus: list[CorpusPaper]) -> PreparedRerankCorpus:
+        corpus = sorted(corpus, key=lambda x: x.added_date, reverse=True)
+        if len(corpus) == 0:
+            return PreparedRerankCorpus(texts=[], time_decay_weight=np.array([]))
+
+        time_decay_weight = 1 / (1 + np.log10(np.arange(len(corpus)) + 1))
+        time_decay_weight = time_decay_weight / time_decay_weight.sum()
+        return PreparedRerankCorpus(
+            texts=[c.ranking_text() for c in corpus],
+            time_decay_weight=time_decay_weight,
+        )
 
     def rerank(
         self,
@@ -18,18 +41,18 @@ class BaseReranker(ABC):
         include_tldr: bool = False,
         include_english_tldr: bool = False,
         max_full_text_chars: int | None = None,
+        prepared_corpus: PreparedRerankCorpus | None = None,
     ) -> list[Paper]:
         if len(candidates) == 0:
             return candidates
-        if len(corpus) == 0:
+
+        prepared_corpus = prepared_corpus or self.prepare_corpus(corpus)
+        if len(prepared_corpus.texts) == 0:
             for candidate in candidates:
                 candidate.score = 0.0
             return candidates
 
-        corpus = sorted(corpus,key=lambda x: x.added_date,reverse=True)
-        time_decay_weight = 1 / (1 + np.log10(np.arange(len(corpus)) + 1))
-        time_decay_weight: np.ndarray = time_decay_weight / time_decay_weight.sum()
-        sim = self.get_similarity_score(
+        sim = self.get_similarity_score_to_prepared_corpus(
             [
                 c.ranking_text(
                     include_full_text=include_full_text,
@@ -39,14 +62,21 @@ class BaseReranker(ABC):
                 )
                 for c in candidates
             ],
-            [c.ranking_text() for c in corpus],
+            prepared_corpus,
         )
-        assert sim.shape == (len(candidates), len(corpus))
-        scores = (sim * time_decay_weight).sum(axis=1) * 10 # [n_candidate]
+        assert sim.shape == (len(candidates), len(prepared_corpus.texts))
+        scores = (sim * prepared_corpus.time_decay_weight).sum(axis=1) * 10 # [n_candidate]
         for s,c in zip(scores,candidates):
             c.score = s
         candidates = sorted(candidates,key=lambda x: x.score,reverse=True)
         return candidates
+
+    def get_similarity_score_to_prepared_corpus(
+        self,
+        s1: list[str],
+        prepared_corpus: PreparedRerankCorpus,
+    ) -> np.ndarray:
+        return self.get_similarity_score(s1, prepared_corpus.texts)
     
     @abstractmethod
     def get_similarity_score(self, s1:list[str], s2:list[str]) -> np.ndarray:
