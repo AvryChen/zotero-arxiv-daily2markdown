@@ -9,6 +9,7 @@ from zotero_arxiv_daily2markdown.hugo_exporter import (
     cleanup_empty_hugo_notices,
     export_empty_notice_to_hugo,
     _render_post_markdown,
+    _render_empty_notice_markdown,
     extract_hugo_paper_urls,
 )
 
@@ -147,3 +148,30 @@ def test_export_empty_notice_and_cleanup_only_marked_posts(tmp_path):
     assert not (tmp_path / "zh" / "posts" / "2026-05-21-arxiv-daily.md").exists()
     assert not (tmp_path / "en" / "posts" / "2026-05-21-arxiv-daily.md").exists()
     assert normal_post.exists()
+
+
+def test_empty_notice_raw_html_block_has_no_blank_lines():
+    for lang in ("zh", "en"):
+        markdown = _render_empty_notice_markdown(
+            lang=lang,
+            date_str="2026-05-21",
+            post_date_time="2026-05-21T20:00:00+08:00",
+            topic="nickelate superconductors",
+        )
+        html_block = markdown[
+            markdown.index('<section class="arxiv-empty-notice"') : markdown.rindex("</section>") + len("</section>")
+        ]
+
+        assert "\n\n" not in html_block
+
+
+def test_empty_notice_markdown_keeps_content_outside_code_fences():
+    markdown = _render_empty_notice_markdown(
+        lang="zh",
+        date_str="2026-05-21",
+        post_date_time="2026-05-21T20:00:00+08:00",
+        topic="nickelate superconductors",
+    )
+
+    assert "```" not in markdown
+    assert '    <section class="notice-section">' not in markdown

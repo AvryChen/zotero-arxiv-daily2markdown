@@ -97,6 +97,7 @@ def _render_empty_notice_markdown(*, lang: str, date_str: str, post_date_time: s
         if is_zh
         else _empty_notice_body_en(date_str=date_str, next_day=next_day, topic=topic)
     )
+    body = _compact_raw_html(body)
     return "\n".join(
         [
             "---",
@@ -119,6 +120,10 @@ def _next_day_label(date_str: str) -> str:
         return (datetime.fromisoformat(date_str).date() + timedelta(days=1)).isoformat()
     except ValueError:
         return "the next day"
+
+
+def _compact_raw_html(html: str) -> str:
+    return "\n".join(line.strip() for line in html.splitlines() if line.strip())
 
 
 def _empty_notice_styles() -> str:
