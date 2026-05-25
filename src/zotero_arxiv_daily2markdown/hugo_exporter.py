@@ -10,6 +10,20 @@ import subprocess
 import re
 
 EMPTY_NOTICE_MARKER = "arxiv_empty_notice: true"
+HUGO_KNOWLEDGE_INPUT_FILES = [
+    "papers.jsonl",
+    "paper_insights.json",
+    "paper_workflows.json",
+    "aligned_vocabulary.json",
+]
+HUGO_GENERATED_CONTENT_PATHS = [
+    "content/en/daily",
+    "content/en/papers",
+    "content/en/knowledge",
+    "content/zh/daily",
+    "content/zh/papers",
+    "content/zh/knowledge",
+]
 
 
 @dataclass
@@ -377,7 +391,7 @@ def _resolve_knowledge_data_dir(config: DictConfig, repo_dir: Path) -> Path:
 
 def _resolve_generated_content_paths(config: DictConfig, repo_dir: Path) -> list[Path]:
     hugo_config = _get_config_section(config, "hugo")
-    configured = hugo_config.get("generated_content_paths") or ["content/en", "content/zh"]
+    configured = hugo_config.get("generated_content_paths") or HUGO_GENERATED_CONTENT_PATHS
     return [
         path if path.is_absolute() else repo_dir / path
         for path in (Path(str(item)) for item in configured)
@@ -400,16 +414,23 @@ def _paths_include_fresh_knowledge_output(config: DictConfig, paths: Iterable[Pa
     if not _hugo_knowledge_pages_enabled(config):
         return False
     knowledge_data_dir = _resolve_knowledge_data_dir(config, repo_dir).resolve()
+    required_paths = {str((knowledge_data_dir / name).resolve()) for name in HUGO_KNOWLEDGE_INPUT_FILES}
+    present_paths: set[str] = set()
     for path in paths:
         path_obj = Path(path)
         if not path_obj.is_absolute():
             path_obj = repo_dir / path_obj
         try:
-            if path_obj.resolve().is_relative_to(knowledge_data_dir):
-                return True
+            resolved = path_obj.resolve()
         except (OSError, ValueError):
             continue
-    return False
+        if str(resolved) in required_paths:
+            present_paths.add(str(resolved))
+    return present_paths == required_paths
+
+
+def _missing_hugo_knowledge_input_files(knowledge_data_dir: Path) -> list[str]:
+    return [name for name in HUGO_KNOWLEDGE_INPUT_FILES if not (knowledge_data_dir / name).exists()]
 
 
 def _run_hugo_shell_command(command: str, repo_dir: Path, *, env_overrides: dict[str, str] | None = None) -> None:
@@ -431,6 +452,12 @@ def _build_knowledge_pages_for_hugo(config: DictConfig, repo_dir: Path) -> list[
         raise FileNotFoundError(
             f"Knowledge data dir does not exist: {knowledge_data_dir}. "
             "Run the incremental knowledge update before publishing Hugo."
+        )
+    missing_inputs = _missing_hugo_knowledge_input_files(knowledge_data_dir)
+    if missing_inputs:
+        raise FileNotFoundError(
+            "Knowledge data dir is missing files required by scripts/build_knowledge_demo.mjs: "
+            + ", ".join(missing_inputs)
         )
 
     hugo_config = _get_config_section(config, "hugo")

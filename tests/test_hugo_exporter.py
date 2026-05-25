@@ -219,12 +219,18 @@ def test_export_to_hugo_auto_push_generates_knowledge_pages_and_builds(tmp_path,
     repo_dir = tmp_path
     content_dir = repo_dir / "content"
     knowledge_dir = repo_dir / "data" / "knowledge"
-    knowledge_path = knowledge_dir / "papers.jsonl"
+    knowledge_paths = [
+        knowledge_dir / "papers.jsonl",
+        knowledge_dir / "paper_insights.json",
+        knowledge_dir / "paper_workflows.json",
+        knowledge_dir / "aligned_vocabulary.json",
+    ]
     extra_path = repo_dir / "data" / "daily" / "2026-05-21.json"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     extra_path.parent.mkdir(parents=True, exist_ok=True)
     (repo_dir / "package.json").write_text("{}\n", encoding="utf-8")
-    knowledge_path.write_text("{}\n", encoding="utf-8")
+    for path in knowledge_paths:
+        path.write_text("{}\n" if path.suffix == ".json" else "{}\n", encoding="utf-8")
     extra_path.write_text("{}\n", encoding="utf-8")
     config = OmegaConf.create(
         {
@@ -249,7 +255,7 @@ def test_export_to_hugo_auto_push_generates_knowledge_pages_and_builds(tmp_path,
         config,
         "overview zh",
         "overview en",
-        extra_paths=[extra_path, knowledge_path],
+        extra_paths=[extra_path, *knowledge_paths],
     )
 
     knowledge_demo_runs = [(args, kwargs) for args, kwargs in runs if args == "npm run knowledge:demo"]
@@ -262,9 +268,58 @@ def test_export_to_hugo_auto_push_generates_knowledge_pages_and_builds(tmp_path,
     assert git_adds
     add_args = git_adds[-1]
     assert str(extra_path) in add_args
-    assert str(knowledge_path) in add_args
-    assert str(content_dir / "en") in add_args
-    assert str(content_dir / "zh") in add_args
+    assert all(str(path) in add_args for path in knowledge_paths)
+    assert str(content_dir / "en" / "daily") in add_args
+    assert str(content_dir / "en" / "papers") in add_args
+    assert str(content_dir / "en" / "knowledge") in add_args
+    assert str(content_dir / "zh" / "daily") in add_args
+    assert str(content_dir / "zh" / "papers") in add_args
+    assert str(content_dir / "zh" / "knowledge") in add_args
+    assert str(content_dir / "en") not in add_args
+    assert str(content_dir / "zh") not in add_args
+
+
+def test_export_to_hugo_auto_push_requires_web_knowledge_inputs_before_build(tmp_path, monkeypatch):
+    repo_dir = tmp_path
+    content_dir = repo_dir / "content"
+    knowledge_dir = repo_dir / "data" / "knowledge"
+    daily_path = repo_dir / "data" / "daily" / "2026-05-21.json"
+    audit_path = knowledge_dir / "domain_decisions.json"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    daily_path.parent.mkdir(parents=True, exist_ok=True)
+    (repo_dir / "package.json").write_text("{}\n", encoding="utf-8")
+    for name in ["papers.jsonl", "paper_insights.json", "paper_workflows.json", "aligned_vocabulary.json"]:
+        (knowledge_dir / name).write_text("{}\n", encoding="utf-8")
+    daily_path.write_text("{}\n", encoding="utf-8")
+    audit_path.write_text("{}\n", encoding="utf-8")
+    config = OmegaConf.create(
+        {
+            "executor": {"target_date": "2026-05-21"},
+            "prompt": {"topic": "nickelate superconductors"},
+            "hugo": {"output_dir": str(content_dir), "auto_push": True},
+            "knowledge": {"enabled": True, "output_dir": str(knowledge_dir)},
+        }
+    )
+    runs = []
+
+    def fake_run(args, **kwargs):
+        runs.append((args, kwargs))
+        if isinstance(args, list) and args[:2] == ["git", "status"]:
+            return SimpleNamespace(stdout=" M content/en/posts/2026-05-21-arxiv-daily.md\n")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.hugo_exporter.subprocess.run", fake_run)
+
+    export_to_hugo(
+        [make_sample_paper(tldr="中文总结", tldr_en="English summary")],
+        config,
+        "overview zh",
+        "overview en",
+        extra_paths=[daily_path, audit_path],
+    )
+
+    assert not any(args == "npm run knowledge:demo" for args, _ in runs)
+    assert not any(args == "npm run build" for args, _ in runs)
 
 
 def test_export_to_hugo_auto_push_skips_knowledge_pages_without_fresh_knowledge_paths(tmp_path, monkeypatch):
