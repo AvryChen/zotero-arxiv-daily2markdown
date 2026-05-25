@@ -333,6 +333,9 @@ class Executor:
                 logger.warning(f"Knowledge report contains non-numeric total_papers={total_papers!r}")
 
         output_dir = Path(str(report.get("output_dir") or self._resolve_knowledge_output_dir())).expanduser()
+        return self._knowledge_output_dir_has_paper_records(output_dir)
+
+    def _knowledge_output_dir_has_paper_records(self, output_dir: Path) -> bool:
         papers_jsonl = output_dir / "papers.jsonl"
         try:
             return any(line.strip() for line in papers_jsonl.read_text(encoding="utf-8").splitlines())
@@ -355,6 +358,13 @@ class Executor:
             update_knowledge_base_incremental(temp_options)
             self._ensure_knowledge_compatibility_files(temp_output_dir)
             self._validate_knowledge_output(temp_output_dir)
+            temp_report = json.loads((temp_output_dir / "build_report.json").read_text(encoding="utf-8"))
+            if (
+                not self._knowledge_report_has_publishable_records(temp_report)
+                and self._knowledge_output_dir_has_paper_records(final_output_dir)
+            ):
+                logger.info("Preserving existing knowledge output because the incremental update has no papers")
+                return temp_report
 
             backup_dir = None
             if final_output_dir.exists():

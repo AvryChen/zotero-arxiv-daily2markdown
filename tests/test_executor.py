@@ -757,6 +757,30 @@ def test_build_single_day_runs_empty_knowledge_update_when_no_papers_accepted(co
     assert artifacts.knowledge_paths == []
 
 
+def test_atomic_knowledge_update_preserves_existing_output_on_empty_update(monkeypatch, tmp_path):
+    from arxiv_knowledge_builder import IncrementalUpdateOptions
+
+    output_dir = tmp_path / "knowledge"
+    _write_minimal_knowledge_output(output_dir, status="updated")
+    original_papers = (output_dir / "papers.jsonl").read_text(encoding="utf-8")
+    original_report = (output_dir / "build_report.json").read_text(encoding="utf-8")
+
+    executor = Executor.__new__(Executor)
+
+    def fake_update(options):
+        _write_minimal_knowledge_output(options.output_dir, status="empty_update")
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.update_knowledge_base_incremental", fake_update)
+
+    report = executor._run_atomic_knowledge_update(
+        IncrementalUpdateOptions(capture_dirs=[], output_dir=str(output_dir))
+    )
+
+    assert report["status"] == "empty_update"
+    assert (output_dir / "papers.jsonl").read_text(encoding="utf-8") == original_papers
+    assert (output_dir / "build_report.json").read_text(encoding="utf-8") == original_report
+
+
 def test_executor_defaults_longlist_to_one_point_five_x_max(config):
     from omegaconf import open_dict
 
