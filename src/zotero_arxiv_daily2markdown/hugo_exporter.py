@@ -444,6 +444,27 @@ def _paths_include_fresh_knowledge_output(config: DictConfig, paths: Iterable[Pa
     return _knowledge_package_has_publishable_records(knowledge_data_dir)
 
 
+def _knowledge_package_ready_for_hugo_build(config: DictConfig, repo_dir: Path) -> bool:
+    if not _hugo_knowledge_pages_enabled(config):
+        return False
+    if not (repo_dir / "package.json").exists():
+        logger.warning(f"Skipping knowledge page build because {repo_dir / 'package.json'} does not exist")
+        return False
+    knowledge_data_dir = _resolve_knowledge_data_dir(config, repo_dir)
+    if not knowledge_data_dir.exists():
+        logger.warning(f"Skipping knowledge page build because knowledge data dir does not exist: {knowledge_data_dir}")
+        return False
+    missing_inputs = _missing_hugo_knowledge_input_files(knowledge_data_dir)
+    if missing_inputs:
+        logger.warning(
+            "Skipping knowledge page build because the knowledge data dir is missing files required by "
+            "scripts/build_knowledge_demo.mjs: "
+            + ", ".join(missing_inputs)
+        )
+        return False
+    return _knowledge_package_has_publishable_records(knowledge_data_dir)
+
+
 def _missing_hugo_knowledge_input_files(knowledge_data_dir: Path) -> list[str]:
     return [name for name in HUGO_KNOWLEDGE_INPUT_FILES if not (knowledge_data_dir / name).exists()]
 
@@ -529,10 +550,13 @@ def _auto_push_hugo_paths(
             _abort_interrupted_rebase(repo_dir)
             _pull_hugo_repo(repo_dir)
         all_paths = list(paths)
-        if build_knowledge_pages and _paths_include_fresh_knowledge_output(config, all_paths, repo_dir):
+        if build_knowledge_pages and (
+            _paths_include_fresh_knowledge_output(config, all_paths, repo_dir)
+            or _knowledge_package_ready_for_hugo_build(config, repo_dir)
+        ):
             all_paths.extend(_build_knowledge_pages_for_hugo(config, repo_dir))
         elif build_knowledge_pages and _hugo_knowledge_pages_enabled(config):
-            logger.info("Skipping knowledge page build because this run did not provide fresh knowledge output paths")
+            logger.info("Skipping knowledge page build because no publishable knowledge package is available")
         subprocess.run(["git", "add", "--", *(str(path) for path in _dedupe_paths(all_paths))], cwd=repo_dir, check=True)
         status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
         if status:
