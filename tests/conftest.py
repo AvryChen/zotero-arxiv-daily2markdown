@@ -48,6 +48,7 @@ def _base_config():
                 "executor.historical_day_cooldown_seconds=0",
                 "domain.use_ai=false",
                 "capture.enabled=false",
+                "knowledge.enabled=false",
             ],
         )
     return cfg

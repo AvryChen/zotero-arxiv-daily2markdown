@@ -1,6 +1,7 @@
 """Tests for Hugo markdown rendering."""
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from tests.canned_responses import make_sample_paper
 from omegaconf import OmegaConf
@@ -8,6 +9,7 @@ from omegaconf import OmegaConf
 from zotero_arxiv_daily2markdown.hugo_exporter import (
     cleanup_empty_hugo_notices,
     export_empty_notice_to_hugo,
+    export_to_hugo,
     _render_post_markdown,
     _render_empty_notice_markdown,
     extract_hugo_paper_urls,
@@ -41,6 +43,7 @@ def test_render_post_markdown_includes_publication_window_zh():
     assert "**本期论文投稿处理时间范围**" in markdown
     assert "2026-05-19 08:00 至 2026-05-19 12:00（北京时间）" in markdown
     assert "2026-05-19 00:00 至 2026-05-19 04:00 UTC" not in markdown
+    assert "\nlang: zh\n" not in markdown
 
 
 def test_render_post_markdown_includes_publication_window_en():
@@ -72,6 +75,7 @@ def test_render_post_markdown_includes_publication_window_en():
     assert "**arXiv submission processing window**" in markdown
     assert "2026-05-19 00:00 to 2026-05-19 04:00 UTC" in markdown
     assert "2026-05-19 08:00 to 2026-05-19 12:00 Beijing time" not in markdown
+    assert "\nlang: en\n" not in markdown
 
 
 def test_render_post_markdown_accepts_string_publication_times():
@@ -129,6 +133,8 @@ def test_export_empty_notice_and_cleanup_only_marked_posts(tmp_path):
     en_text = (tmp_path / "en" / "posts" / "2026-05-21-arxiv-daily.md").read_text(encoding="utf-8")
     assert artifacts.date_str == "2026-05-21"
     assert "arxiv_empty_notice: true" in zh_text
+    assert "\nlang: zh\n" not in zh_text
+    assert "\nlang: en\n" not in en_text
     assert "昨天没有新论文" in zh_text
     assert "为什么今天看到的是昨天的论文？" in zh_text
     assert "New submissions" in zh_text
@@ -175,3 +181,35 @@ def test_empty_notice_markdown_keeps_content_outside_code_fences():
 
     assert "```" not in markdown
     assert '    <section class="notice-section">' not in markdown
+
+
+def test_export_to_hugo_auto_push_stages_daily_json_extra_path(tmp_path, monkeypatch):
+    config = OmegaConf.create(
+        {
+            "executor": {"target_date": "2026-05-21"},
+            "prompt": {"topic": "nickelate superconductors"},
+            "hugo": {"output_dir": str(tmp_path / "content"), "auto_push": True},
+        }
+    )
+    extra_path = tmp_path / "data" / "daily" / "2026-05-21.json"
+    extra_path.parent.mkdir(parents=True, exist_ok=True)
+    extra_path.write_text("{}\n", encoding="utf-8")
+    runs = []
+
+    def fake_run(args, **kwargs):
+        runs.append(args)
+        if args[:2] == ["git", "status"]:
+            return SimpleNamespace(stdout=" M data/daily/2026-05-21.json\n")
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.hugo_exporter.subprocess.run", fake_run)
+
+    export_to_hugo(
+        [make_sample_paper(tldr="中文总结", tldr_en="English summary")],
+        config,
+        "overview zh",
+        "overview en",
+        extra_paths=[extra_path],
+    )
+
+    assert any(args[:3] == ["git", "add", "--"] and str(extra_path) in args for args in runs)

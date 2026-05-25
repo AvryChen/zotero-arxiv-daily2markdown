@@ -1,0 +1,3 @@
+[submodule "vendor/arxiv-knowledge-builder"]
+	path = vendor/arxiv-knowledge-builder
+	url = https://github.com/AvryChen/knowledge-of-nickelates.git

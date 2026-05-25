@@ -2,14 +2,16 @@ from loguru import logger
 from pyzotero import zotero
 from omegaconf import DictConfig, ListConfig, OmegaConf
 import html
+import json
 import os
+import shutil
 import time
 import traceback
 from .utils import glob_match, to_bool
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper, DomainDecision, Paper
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from .reranker import get_reranker_cls
 from .construct_email import render_email
@@ -22,6 +24,7 @@ from .hugo_exporter import (
     export_to_hugo,
 )
 from .capture_exporter import export_capture_artifacts
+from .daily_exporter import beijing_now_iso, export_daily_json
 from .domain_classifier import classify_domain_papers
 from .reranker.base import PreparedRerankCorpus
 from openai import OpenAI
@@ -29,6 +32,38 @@ from tqdm import tqdm
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+try:
+    from arxiv_knowledge_builder import IncrementalUpdateOptions, update_knowledge_base_incremental
+except ImportError:  # pragma: no cover - exercised only when optional dependency is missing in production
+    IncrementalUpdateOptions = None
+
+    def update_knowledge_base_incremental(options):
+        raise RuntimeError("arxiv-knowledge-builder is not installed; disable knowledge.enabled or install the package")
+
+
+KNOWLEDGE_REQUIRED_FILES = [
+    "papers.jsonl",
+    "paper_insights.json",
+    "paper_workflows.json",
+    "aligned_vocabulary.json",
+    "build_report.json",
+]
+
+KNOWLEDGE_JSON_FILES = [
+    "domain_decisions.json",
+    "paper_insights.json",
+    "paper_workflows.json",
+    "facet_vocabulary.json",
+    "aligned_vocabulary.json",
+    "build_report.json",
+]
+
+KNOWLEDGE_JSONL_FILES = [
+    "all_papers.jsonl",
+    "papers.jsonl",
+]
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -60,6 +95,8 @@ class DailyRunResult:
     captured_count: int = 0
     exported: bool = False
     emailed: bool = False
+    knowledge_updated: bool = False
+    knowledge_error: str | None = None
     skipped: bool = False
     error: str | None = None
 
@@ -73,6 +110,8 @@ class SingleDayArtifacts:
     accepted_papers: list[Paper] | None = None
     candidate_papers: list[Paper] | None = None
     domain_decisions: list[DomainDecision] | None = None
+    daily_json_path: str | None = None
+    knowledge_paths: list[str] | None = None
 
 
 def parse_executor_date(value: str, config_key: str) -> date:
@@ -164,6 +203,44 @@ class Executor:
     def _capture_enabled(self) -> bool:
         return to_bool(self.config.get("capture", {}).get("enabled", False))
 
+    def _knowledge_enabled(self) -> bool:
+        return to_bool(self.config.get("knowledge", {}).get("enabled", False))
+
+    def _knowledge_non_blocking(self) -> bool:
+        return to_bool(self.config.get("knowledge", {}).get("non_blocking", True))
+
+    def _resolve_knowledge_output_dir(self) -> str:
+        knowledge_config = self.config.get("knowledge", {})
+        configured = knowledge_config.get("output_dir")
+        if configured:
+            return str(Path(str(configured)).expanduser())
+        if hasattr(self.config, "hugo") and self.config.hugo.get("output_dir"):
+            output_dir = Path(str(self.config.hugo.output_dir)).expanduser()
+            repo_dir = output_dir.parent if output_dir.name == "content" else output_dir
+            return str(repo_dir / "data" / "knowledge")
+        return "data/knowledge"
+
+    def _resolve_knowledge_capture_dir(self, capture_result=None) -> str:
+        knowledge_config = self.config.get("knowledge", {})
+        capture_config = self.config.get("capture", {})
+        configured = (
+            knowledge_config.get("capture_dir")
+            or getattr(capture_result, "output_dir", None)
+            or capture_config.get("output_dir")
+            or "data/capture"
+        )
+        return str(Path(str(configured)).expanduser())
+
+    def _knowledge_llm_config(self) -> tuple[str, str, str]:
+        llm_config = self.config.get("llm", {})
+        api_config = llm_config.get("api", {})
+        generation_kwargs = llm_config.get("generation_kwargs", {})
+        return (
+            str(api_config.get("key") or ""),
+            str(api_config.get("base_url") or ""),
+            str(generation_kwargs.get("model") or ""),
+        )
+
     def _prepare_rerank_corpus(self, corpus: list[CorpusPaper]) -> PreparedRerankCorpus | None:
         reranker = getattr(self, "reranker", None)
         if reranker is None or not getattr(reranker, "supports_prepared_corpus", False):
@@ -183,6 +260,158 @@ class Executor:
     def _run_date_for_outputs(self) -> str:
         target_date = self.config.executor.get("target_date")
         return str(target_date) if target_date else datetime.now().date().isoformat()
+
+    def _artifact_extra_paths(self, artifacts: SingleDayArtifacts) -> list[str] | None:
+        paths = []
+        if artifacts.daily_json_path:
+            paths.append(artifacts.daily_json_path)
+        paths.extend(artifacts.knowledge_paths or [])
+        return paths or None
+
+    def _handle_knowledge_error(self, message: str, result: DailyRunResult) -> list[str]:
+        if self._knowledge_non_blocking():
+            logger.error(message)
+            result.knowledge_error = message
+            return []
+        raise RuntimeError(message)
+
+    def _update_knowledge_base_for_daily(self, capture_result, *, processed_at: str, result: DailyRunResult) -> list[str]:
+        if not self._knowledge_enabled():
+            return []
+        if IncrementalUpdateOptions is None:
+            message = "arxiv-knowledge-builder is not installed; disable knowledge.enabled or install the package"
+            return self._handle_knowledge_error(message, result)
+        if capture_result is None or not getattr(capture_result, "run_report_path", None):
+            message = "knowledge.enabled requires capture.enabled so data/capture/runs/YYYY-MM-DD.json exists"
+            return self._handle_knowledge_error(message, result)
+
+        api_key, api_base, model = self._knowledge_llm_config()
+        knowledge_config = self.config.get("knowledge", {})
+        options = IncrementalUpdateOptions(
+            capture_dirs=[self._resolve_knowledge_capture_dir(capture_result)],
+            output_dir=self._resolve_knowledge_output_dir(),
+            accepted_paper_ids=None,
+            run_report_path=str(capture_result.run_report_path),
+            announcement_date=self._run_date_for_outputs(),
+            processed_at=processed_at,
+            batch_size=int(knowledge_config.get("batch_size", 16) or 16),
+            full_text_char_budget=int(knowledge_config.get("full_text_char_budget", 120000) or 120000),
+            run_alignment=to_bool(knowledge_config.get("run_alignment", True)),
+            run_vocabulary_review=to_bool(knowledge_config.get("run_vocabulary_review", True)),
+            vocabulary_review_max_terms_per_type=int(knowledge_config.get("vocabulary_review_max_terms_per_type", 250) or 250),
+            align_max_facets=int(knowledge_config.get("align_max_facets", 100) or 100),
+            align_max_per_paper=int(knowledge_config.get("align_max_per_paper", 5) or 5),
+            openai_api_key=api_key,
+            openai_api_base=api_base,
+            model=model,
+        )
+        try:
+            report = self._run_atomic_knowledge_update(options)
+            result.knowledge_updated = True
+            return [str(path) for path in report.get("output_files", [])]
+        except Exception as exc:
+            result.knowledge_error = str(exc)
+            logger.error(f"Knowledge base incremental update failed: {exc}")
+            if not self._knowledge_non_blocking():
+                raise
+            return []
+
+    def _run_atomic_knowledge_update(self, options) -> dict:
+        final_output_dir = Path(str(options.output_dir)).expanduser()
+        final_output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+        with TemporaryDirectory(prefix=f".{final_output_dir.name}-", dir=str(final_output_dir.parent)) as temp_root:
+            temp_output_dir = Path(temp_root) / "output"
+            if final_output_dir.exists():
+                shutil.copytree(final_output_dir, temp_output_dir, dirs_exist_ok=True)
+            else:
+                temp_output_dir.mkdir(parents=True, exist_ok=True)
+
+            temp_options = replace(options, output_dir=str(temp_output_dir))
+            update_knowledge_base_incremental(temp_options)
+            self._ensure_knowledge_compatibility_files(temp_output_dir)
+            self._validate_knowledge_output(temp_output_dir)
+
+            backup_dir = None
+            if final_output_dir.exists():
+                backup_dir = final_output_dir.parent / f".{final_output_dir.name}.backup-{datetime.now():%Y%m%d%H%M%S%f}"
+                final_output_dir.rename(backup_dir)
+            try:
+                temp_output_dir.rename(final_output_dir)
+            except Exception:
+                if backup_dir is not None and backup_dir.exists() and not final_output_dir.exists():
+                    backup_dir.rename(final_output_dir)
+                raise
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+        report = self._rewrite_knowledge_report_paths(final_output_dir)
+        self._validate_knowledge_output(final_output_dir)
+        return report
+
+    def _ensure_knowledge_compatibility_files(self, output_dir: Path) -> None:
+        facet_vocabulary = output_dir / "facet_vocabulary.json"
+        aligned_vocabulary = output_dir / "aligned_vocabulary.json"
+        if not aligned_vocabulary.exists():
+            aligned_vocabulary.write_text(
+                facet_vocabulary.read_text(encoding="utf-8") if facet_vocabulary.exists() else "[]\n",
+                encoding="utf-8",
+            )
+
+        facet_vocabulary_csv = output_dir / "facet_vocabulary.csv"
+        aligned_vocabulary_csv = output_dir / "aligned_vocabulary.csv"
+        if not aligned_vocabulary_csv.exists() and facet_vocabulary_csv.exists():
+            shutil.copyfile(facet_vocabulary_csv, aligned_vocabulary_csv)
+
+    def _validate_knowledge_output(self, output_dir: Path) -> None:
+        missing = [name for name in KNOWLEDGE_REQUIRED_FILES if not (output_dir / name).exists()]
+        if missing:
+            raise RuntimeError(f"Knowledge update missing required files: {', '.join(missing)}")
+
+        for name in KNOWLEDGE_JSON_FILES:
+            path = output_dir / name
+            if path.exists():
+                json.loads(path.read_text(encoding="utf-8") or "null")
+
+        for name in KNOWLEDGE_JSONL_FILES:
+            path = output_dir / name
+            if not path.exists():
+                continue
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if line.strip():
+                    try:
+                        json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(f"Invalid JSONL in {path}:{line_number}: {exc}") from exc
+
+    def _rewrite_knowledge_report_paths(self, output_dir: Path) -> dict:
+        report_path = output_dir / "build_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["output_dir"] = str(output_dir)
+        report["output_files"] = self._knowledge_output_files(output_dir)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return report
+
+    def _knowledge_output_files(self, output_dir: Path) -> list[str]:
+        names = [
+            "all_papers.jsonl",
+            "papers.jsonl",
+            "domain_decisions.json",
+            "paper_insights.json",
+            "paper_workflows.json",
+            "facet_vocabulary.json",
+            "facet_vocabulary.csv",
+            "materials_methods_matrix.csv",
+            "vocabulary_duplicate_candidates.json",
+            "vocabulary_duplicate_review_meta.json",
+            "aligned_insights.json",
+            "aligned_matrix.csv",
+            "aligned_vocabulary.json",
+            "aligned_vocabulary.csv",
+            "alignment_meta.json",
+            "build_report.json",
+        ]
+        return [str(output_dir / name) for name in names if (output_dir / name).exists()]
 
     def _get_date_range(self) -> list[str] | None:
         start_date = self.config.executor.get("start_date")
@@ -260,6 +489,7 @@ class Executor:
 
     def _build_single_day_artifacts(self, corpus: list[CorpusPaper]) -> SingleDayArtifacts:
         target_date = self.config.executor.get("target_date")
+        processed_at = beijing_now_iso()
         result = DailyRunResult(target_date=str(target_date) if target_date else None)
         all_papers = []
         self._set_retriever_full_text_mode(False)
@@ -314,6 +544,7 @@ class Executor:
         result.uncertain_count = sum(1 for decision in domain_decisions if decision.decision == "uncertain")
         result.displayed_count = len(display_papers)
 
+        capture_result = None
         if self._capture_enabled():
             capture_result = export_capture_artifacts(
                 accepted_papers=accepted_papers,
@@ -331,6 +562,12 @@ class Executor:
                 },
             )
             result.captured_count = capture_result.captured_count
+
+        knowledge_paths = self._update_knowledge_base_for_daily(
+            capture_result,
+            processed_at=processed_at,
+            result=result,
+        )
 
         logger.info("Generating daily overview...")
         overview_zh = ""
@@ -375,6 +612,26 @@ class Executor:
             except Exception as exc:
                 logger.error(f"Failed to generate overview: {exc}")
 
+        daily_json_path = export_daily_json(
+            accepted_papers=accepted_papers,
+            display_papers=display_papers,
+            candidate_papers=all_papers,
+            domain_decisions=domain_decisions,
+            overview_zh=overview_zh,
+            overview_en=overview_en,
+            config=self.config,
+            announcement_date=self._run_date_for_outputs(),
+            processed_at=processed_at,
+            report={
+                "retrieved_count": result.retrieved_count,
+                "longlisted_count": result.longlisted_count,
+                "accepted_count": result.accepted_count,
+                "rejected_count": result.rejected_count,
+                "uncertain_count": result.uncertain_count,
+                "displayed_count": result.displayed_count,
+            },
+        )
+
         return SingleDayArtifacts(
             result=result,
             papers=display_papers,
@@ -383,6 +640,8 @@ class Executor:
             accepted_papers=accepted_papers,
             candidate_papers=longlist_papers,
             domain_decisions=domain_decisions,
+            daily_json_path=str(daily_json_path),
+            knowledge_paths=knowledge_paths,
         )
 
     def _paper_urls(self, papers: list[Paper]) -> list[str]:
@@ -436,8 +695,8 @@ class Executor:
     def _cleanup_empty_hugo_notices(self) -> None:
         cleanup_empty_hugo_notices(self.config)
 
-    def _export_empty_hugo_notice(self) -> bool:
-        return export_empty_notice_to_hugo(self.config) is not None
+    def _export_empty_hugo_notice(self, extra_paths: list[str | Path] | None = None) -> bool:
+        return export_empty_notice_to_hugo(self.config, extra_paths=extra_paths) is not None
 
     def _apply_previous_day_correction(self, corpus: list[CorpusPaper] | None = None) -> None:
         if not hasattr(self.config, "hugo") or not self.config.hugo.get("output_dir"):
@@ -455,7 +714,13 @@ class Executor:
                 logger.info(f"No Hugo correction needed for {target_date}: paper URLs already match.")
                 return
 
-            export_to_hugo(artifacts.papers, self.config, artifacts.overview_zh, artifacts.overview_en)
+            export_to_hugo(
+                artifacts.papers,
+                self.config,
+                artifacts.overview_zh,
+                artifacts.overview_en,
+                extra_paths=self._artifact_extra_paths(artifacts),
+            )
             self._send_revision_email(target_date, artifacts.papers)
             logger.info(f"Previous-day correction completed for {target_date}")
         except Exception as exc:
@@ -543,14 +808,18 @@ class Executor:
         if result.retrieved_count == 0 and not self.config.executor.send_empty:
             logger.info("No new papers found. No email will be sent.")
             if empty_notice_on_skip:
-                result.exported = self._export_empty_hugo_notice()
+                result.exported = self._export_empty_hugo_notice(
+                    extra_paths=self._artifact_extra_paths(artifacts)
+                )
             result.skipped = True
             return result
 
         if result.retrieved_count > 0 and result.selected_count == 0 and not self.config.executor.send_empty:
             logger.info("No papers met the score threshold. No email will be sent.")
             if empty_notice_on_skip:
-                result.exported = self._export_empty_hugo_notice()
+                result.exported = self._export_empty_hugo_notice(
+                    extra_paths=self._artifact_extra_paths(artifacts)
+                )
             result.skipped = True
             return result
 
@@ -566,7 +835,13 @@ class Executor:
         else:
             logger.info("Skipping email for this run.")
 
-        export_to_hugo(artifacts.papers, self.config, artifacts.overview_zh, artifacts.overview_en)
+        export_to_hugo(
+            artifacts.papers,
+            self.config,
+            artifacts.overview_zh,
+            artifacts.overview_en,
+            extra_paths=self._artifact_extra_paths(artifacts),
+        )
         result.exported = True
         return result
 

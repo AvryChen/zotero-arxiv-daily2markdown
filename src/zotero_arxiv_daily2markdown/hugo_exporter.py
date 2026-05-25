@@ -105,7 +105,6 @@ def _render_empty_notice_markdown(*, lang: str, date_str: str, post_date_time: s
             f"date: {post_date_time}",
             "tags: [arxiv, paper]",
             "categories: [Daily]",
-            f"lang: {lang}",
             EMPTY_NOTICE_MARKER,
             "---",
             "",
@@ -266,7 +265,10 @@ def _empty_notice_body_en(*, date_str: str, next_day: str, topic: str) -> str:
 </section>"""
 
 
-def export_empty_notice_to_hugo(config: DictConfig) -> HugoExportArtifacts | None:
+def export_empty_notice_to_hugo(
+    config: DictConfig,
+    extra_paths: list[str | Path] | None = None,
+) -> HugoExportArtifacts | None:
     if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
         return None
     artifacts = build_empty_notice_hugo_artifacts(config)
@@ -275,9 +277,12 @@ def export_empty_notice_to_hugo(config: DictConfig) -> HugoExportArtifacts | Non
     Path(artifacts.filepath_zh).write_text(artifacts.content_zh, encoding="utf-8")
     Path(artifacts.filepath_en).write_text(artifacts.content_en, encoding="utf-8")
     logger.info(f"Empty Hugo notice exported to {artifacts.filepath_zh} and {artifacts.filepath_en}")
+    paths = [Path(artifacts.filepath_zh), Path(artifacts.filepath_en)]
+    if extra_paths:
+        paths.extend(Path(path) for path in extra_paths)
     _auto_push_hugo_paths(
         config,
-        [Path(artifacts.filepath_zh), Path(artifacts.filepath_en)],
+        paths,
         f"Auto: Add empty arXiv notice for {artifacts.date_str}",
     )
     return artifacts
@@ -428,7 +433,6 @@ def _render_post_markdown(
         f"date: {post_date_time}",
         "tags: [arxiv, paper]",
         "categories: [Daily]",
-        f"lang: {lang}",
         "---",
         "",
         overview_heading,
@@ -459,7 +463,13 @@ def _render_post_markdown(
 
     return "\n".join(content).rstrip() + "\n"
 
-def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "", overview_en: str = ""):
+def export_to_hugo(
+    papers: list[Paper],
+    config: DictConfig,
+    overview_zh: str = "",
+    overview_en: str = "",
+    extra_paths: list[str | Path] | None = None,
+):
     if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
         return
     artifacts = build_hugo_export_artifacts(papers, config, overview_zh=overview_zh, overview_en=overview_en)
@@ -496,7 +506,10 @@ def export_to_hugo(papers: list[Paper], config: DictConfig, overview_zh: str = "
     # Commit and Push
     if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
         try:
-            subprocess.run(["git", "add", artifacts.filepath_zh, artifacts.filepath_en], cwd=repo_dir, check=True)
+            paths_to_add = [artifacts.filepath_zh, artifacts.filepath_en]
+            if extra_paths:
+                paths_to_add.extend(str(path) for path in extra_paths)
+            subprocess.run(["git", "add", "--", *paths_to_add], cwd=repo_dir, check=True)
             commit_msg = f"Auto: Add arXiv daily for {artifacts.date_str}"
             # Check if there are changes to commit
             status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout

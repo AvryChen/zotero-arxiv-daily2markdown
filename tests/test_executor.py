@@ -1,5 +1,6 @@
 """Tests for zotero_arxiv_daily2markdown.executor: normalize_path_patterns, filter_corpus, fetch_zotero_corpus, E2E."""
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -7,7 +8,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from zotero_arxiv_daily2markdown.executor import DailyRunResult, Executor, SingleDayArtifacts, expand_date_range, normalize_path_patterns
-from zotero_arxiv_daily2markdown.protocol import CorpusPaper
+from zotero_arxiv_daily2markdown.protocol import CorpusPaper, DomainDecision
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,49 @@ def _make_executor(include_patterns=None, ignore_patterns=None):
     executor.include_path_patterns = normalize_path_patterns(include_patterns, "include_path") if include_patterns else None
     executor.ignore_path_patterns = normalize_path_patterns(ignore_patterns, "ignore_path") if ignore_patterns else None
     return executor
+
+
+def _accept_all_domain_papers(papers, config, client):
+    decisions = []
+    for paper in papers:
+        decision = DomainDecision(
+            paper_id=paper.arxiv_id or paper.url,
+            is_in_domain=True,
+            confidence=0.95,
+            decision="accept",
+            reason="test accepted paper",
+            accepted=True,
+        )
+        paper.domain_decision = decision
+        decisions.append(decision)
+    return decisions
+
+
+def _write_minimal_knowledge_output(output_dir, *, status="updated", output_files=None):
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "papers.jsonl").write_text("", encoding="utf-8")
+    (output_dir / "all_papers.jsonl").write_text("", encoding="utf-8")
+    (output_dir / "domain_decisions.json").write_text("[]\n", encoding="utf-8")
+    (output_dir / "paper_insights.json").write_text("[]\n", encoding="utf-8")
+    (output_dir / "paper_workflows.json").write_text("[]\n", encoding="utf-8")
+    (output_dir / "facet_vocabulary.json").write_text("[]\n", encoding="utf-8")
+    (output_dir / "facet_vocabulary.csv").write_text("facet_type,canonical_name\n", encoding="utf-8")
+    (output_dir / "materials_methods_matrix.csv").write_text("paper_id\n", encoding="utf-8")
+    (output_dir / "build_report.json").write_text(
+        json.dumps(
+            {
+                "mode": "incremental_daily_update",
+                "status": status,
+                "output_dir": str(output_dir),
+                "output_files": output_files or [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_filter_corpus_matches_any_path_against_any_pattern():
@@ -455,6 +499,7 @@ def test_build_single_day_captures_all_accepted_but_displays_top_limit(config, m
     from tests.canned_responses import make_sample_paper
 
     with open_dict(config):
+        config.executor.target_date = "2026-05-21"
         config.executor.max_paper_num = 2
         config.executor.longlist = 3
         config.executor.score_threshold = 0.0
@@ -463,6 +508,7 @@ def test_build_single_day_captures_all_accepted_but_displays_top_limit(config, m
         config.capture.output_dir = str(tmp_path / "capture")
         config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
         config.display.max_paper_num = 2
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
 
     retrieved = [
         make_sample_paper(title="Paper A", arxiv_id="2605.00001v1", full_text=None),
@@ -511,11 +557,201 @@ def test_build_single_day_captures_all_accepted_but_displays_top_limit(config, m
     artifacts = executor._build_single_day_artifacts([])
 
     records = (tmp_path / "capture" / "papers.jsonl").read_text(encoding="utf-8").splitlines()
+    daily_payload = json.loads((tmp_path / "site" / "data" / "daily" / "2026-05-21.json").read_text(encoding="utf-8"))
     assert [paper.title for paper in artifacts.accepted_papers] == ["Paper A", "Paper B", "Paper C"]
     assert [paper.title for paper in artifacts.papers] == ["Paper A", "Paper B"]
     assert artifacts.result.accepted_count == 3
     assert artifacts.result.displayed_count == 2
     assert len(records) == 3
+    assert len(daily_payload["papers"]) == 3
+    assert daily_payload["displayed_count"] == 2
+    assert daily_payload["papers"][0]["paper_id"] == "2605.00001"
+
+
+def test_build_single_day_updates_knowledge_after_capture(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.target_date = "2026-05-21"
+        config.executor.score_threshold = 0.0
+        config.executor.send_empty = True
+        config.domain.use_ai = False
+        config.capture.enabled = True
+        config.capture.output_dir = str(tmp_path / "capture")
+        config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
+        config.knowledge = {
+            "enabled": True,
+            "output_dir": str(tmp_path / "site" / "data" / "knowledge"),
+            "batch_size": 16,
+            "full_text_char_budget": 120000,
+            "non_blocking": True,
+            "run_alignment": True,
+            "run_vocabulary_review": True,
+        }
+
+    paper = make_sample_paper(title="Knowledge Paper", arxiv_id="2605.00005v1", full_text="Full text")
+    paper.score = 5.0
+    paper.pdf_bytes = b"%PDF knowledge"
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.debug = False
+    executor.retrievers = {"arxiv": SimpleNamespace(retrieve_papers=lambda: [paper], populate_full_text=lambda p: None)}
+    executor.reranker = SimpleNamespace(rerank=lambda candidates, corpus, **kwargs: candidates)
+    executor.openai_client = SimpleNamespace()
+    executor._prepared_rerank_corpus = None
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.classify_domain_papers", _accept_all_domain_papers)
+    captured_options = []
+
+    def fake_update(options):
+        captured_options.append(options)
+        _write_minimal_knowledge_output(options.output_dir)
+        return {"mode": "incremental_daily_update"}
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.update_knowledge_base_incremental", fake_update)
+
+    artifacts = executor._build_single_day_artifacts([])
+
+    assert artifacts.result.knowledge_error is None
+    assert str(tmp_path / "site" / "data" / "knowledge" / "papers.jsonl") in artifacts.knowledge_paths
+    assert str(tmp_path / "site" / "data" / "knowledge" / "aligned_vocabulary.json") in artifacts.knowledge_paths
+    assert captured_options[0].capture_dirs == [str(tmp_path / "capture")]
+    assert captured_options[0].output_dir != str(tmp_path / "site" / "data" / "knowledge")
+    assert captured_options[0].accepted_paper_ids is None
+    assert captured_options[0].run_report_path == str(tmp_path / "capture" / "runs" / "2026-05-21.json")
+    assert captured_options[0].announcement_date == "2026-05-21"
+    assert captured_options[0].batch_size == 16
+    build_report = json.loads((tmp_path / "site" / "data" / "knowledge" / "build_report.json").read_text(encoding="utf-8"))
+    assert build_report["output_dir"] == str(tmp_path / "site" / "data" / "knowledge")
+
+
+def test_build_single_day_records_non_blocking_knowledge_error(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.target_date = "2026-05-21"
+        config.executor.score_threshold = 0.0
+        config.executor.send_empty = True
+        config.domain.use_ai = False
+        config.capture.enabled = True
+        config.capture.output_dir = str(tmp_path / "capture")
+        config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
+        config.knowledge = {"enabled": True, "output_dir": str(tmp_path / "site" / "data" / "knowledge"), "non_blocking": True}
+
+    paper = make_sample_paper(title="Knowledge Paper", arxiv_id="2605.00006v1", full_text="Full text")
+    paper.score = 5.0
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.debug = False
+    executor.retrievers = {"arxiv": SimpleNamespace(retrieve_papers=lambda: [paper], populate_full_text=lambda p: None)}
+    executor.reranker = SimpleNamespace(rerank=lambda candidates, corpus, **kwargs: candidates)
+    executor.openai_client = SimpleNamespace()
+    executor._prepared_rerank_corpus = None
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.classify_domain_papers", _accept_all_domain_papers)
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.update_knowledge_base_incremental",
+        lambda options: (_ for _ in ()).throw(RuntimeError("knowledge failed")),
+    )
+
+    artifacts = executor._build_single_day_artifacts([])
+
+    assert artifacts.result.accepted_count == 1
+    assert artifacts.result.knowledge_error == "knowledge failed"
+    assert artifacts.knowledge_paths == []
+
+
+def test_build_single_day_skips_knowledge_when_disabled(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.target_date = "2026-05-21"
+        config.executor.score_threshold = 0.0
+        config.executor.send_empty = True
+        config.domain.use_ai = False
+        config.capture.enabled = True
+        config.capture.output_dir = str(tmp_path / "capture")
+        config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
+        config.knowledge = {"enabled": False, "output_dir": str(tmp_path / "site" / "data" / "knowledge")}
+
+    paper = make_sample_paper(title="Knowledge Paper", arxiv_id="2605.00007v1", full_text="Full text")
+    paper.score = 5.0
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.debug = False
+    executor.retrievers = {"arxiv": SimpleNamespace(retrieve_papers=lambda: [paper], populate_full_text=lambda p: None)}
+    executor.reranker = SimpleNamespace(rerank=lambda candidates, corpus, **kwargs: candidates)
+    executor.openai_client = SimpleNamespace()
+    executor._prepared_rerank_corpus = None
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.classify_domain_papers", _accept_all_domain_papers)
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.update_knowledge_base_incremental",
+        lambda options: (_ for _ in ()).throw(AssertionError("knowledge should be disabled")),
+    )
+
+    artifacts = executor._build_single_day_artifacts([])
+
+    assert artifacts.result.knowledge_error is None
+    assert artifacts.knowledge_paths == []
+
+
+def test_build_single_day_runs_empty_knowledge_update_when_no_papers_accepted(config, monkeypatch, tmp_path):
+    from omegaconf import open_dict
+
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.executor.target_date = "2026-05-21"
+        config.executor.score_threshold = 10.0
+        config.executor.send_empty = False
+        config.capture.enabled = True
+        config.capture.output_dir = str(tmp_path / "capture")
+        config.capture.fulltext_dir = str(tmp_path / "capture" / "fulltext")
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
+        config.knowledge = {"enabled": True, "output_dir": str(tmp_path / "site" / "data" / "knowledge"), "non_blocking": True}
+
+    paper = make_sample_paper(title="Below threshold", arxiv_id="2605.00008v1", full_text="Full text")
+    paper.score = 1.0
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.debug = False
+    executor.retrievers = {"arxiv": SimpleNamespace(retrieve_papers=lambda: [paper], populate_full_text=lambda p: None)}
+    executor.reranker = SimpleNamespace(rerank=lambda candidates, corpus, **kwargs: candidates)
+    executor.openai_client = SimpleNamespace()
+    executor._prepared_rerank_corpus = None
+    captured_options = []
+
+    def fake_update(options):
+        captured_options.append(options)
+        _write_minimal_knowledge_output(options.output_dir, status="empty_update")
+        return {"mode": "incremental_daily_update", "status": "empty_update"}
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.update_knowledge_base_incremental", fake_update)
+
+    artifacts = executor._build_single_day_artifacts([])
+
+    assert artifacts.result.accepted_count == 0
+    assert artifacts.result.captured_count == 0
+    assert artifacts.result.knowledge_updated is True
+    assert artifacts.result.knowledge_error is None
+    assert captured_options[0].accepted_paper_ids is None
+    assert captured_options[0].run_report_path == str(tmp_path / "capture" / "runs" / "2026-05-21.json")
+    assert captured_options[0].announcement_date == "2026-05-21"
+    assert (tmp_path / "site" / "data" / "knowledge" / "aligned_vocabulary.json").exists()
 
 
 def test_executor_defaults_longlist_to_one_point_five_x_max(config):
@@ -649,14 +885,16 @@ def test_run_prepares_rerank_corpus_once_for_historical_range(config):
     assert executor._prepared_rerank_corpus is None
 
 
-def test_build_single_day_uses_prepared_rerank_corpus_when_available(config):
+def test_build_single_day_uses_prepared_rerank_corpus_when_available(config, tmp_path):
     from omegaconf import open_dict
 
     from tests.canned_responses import make_sample_paper
 
     with open_dict(config):
+        config.executor.target_date = "2026-05-21"
         config.executor.score_threshold = 99.0
         config.capture.enabled = False
+        config.hugo.output_dir = str(tmp_path / "site" / "content")
 
     paper = make_sample_paper(title="Candidate")
     prepared = object()
@@ -688,6 +926,9 @@ def test_build_single_day_uses_prepared_rerank_corpus_when_available(config):
 
     assert artifacts.result.retrieved_count == 1
     assert rerank_calls == [(False, prepared, [paper], corpus)]
+    daily_payload = json.loads((tmp_path / "site" / "data" / "daily" / "2026-05-21.json").read_text(encoding="utf-8"))
+    assert daily_payload["empty"] is True
+    assert daily_payload["papers"] == []
 
 
 def test_run_date_range_cools_down_between_processed_dates(config, monkeypatch):
@@ -779,6 +1020,38 @@ def test_run_single_day_email_failure_still_exports(config, monkeypatch):
     assert export_calls[0][0] == [paper]
 
 
+def test_run_single_day_exports_daily_and_knowledge_extra_paths(config, monkeypatch):
+    from tests.canned_responses import make_sample_paper
+
+    paper = make_sample_paper()
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date="2026-05-21", retrieved_count=1, selected_count=1),
+        papers=[paper],
+        overview_zh="overview zh",
+        overview_en="overview en",
+        daily_json_path="/site/data/daily/2026-05-21.json",
+        knowledge_paths=["/site/data/knowledge/papers.jsonl", "/site/data/knowledge/build_report.json"],
+    )
+
+    export_calls = []
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.send_email", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.export_to_hugo",
+        lambda *args, **kwargs: export_calls.append((args, kwargs)),
+    )
+
+    result = executor._run_single_day([])
+
+    assert result.exported is True
+    assert export_calls[0][1]["extra_paths"] == [
+        "/site/data/daily/2026-05-21.json",
+        "/site/data/knowledge/papers.jsonl",
+        "/site/data/knowledge/build_report.json",
+    ]
+
+
 def test_run_date_range_can_send_email(config):
     from omegaconf import open_dict
 
@@ -867,7 +1140,7 @@ def test_run_single_day_exports_empty_notice_for_default_daily_empty_result(conf
     notice_calls = []
     monkeypatch.setattr(
         "zotero_arxiv_daily2markdown.executor.export_empty_notice_to_hugo",
-        lambda cfg: notice_calls.append(cfg.executor.target_date) or object(),
+        lambda cfg, extra_paths=None: notice_calls.append((cfg.executor.target_date, extra_paths)) or object(),
     )
     monkeypatch.setattr(
         "zotero_arxiv_daily2markdown.executor.export_to_hugo",
@@ -883,7 +1156,7 @@ def test_run_single_day_exports_empty_notice_for_default_daily_empty_result(conf
     assert returned.skipped is True
     assert returned.exported is True
     assert returned.emailed is False
-    assert notice_calls == ["2026-05-21"]
+    assert notice_calls == [("2026-05-21", None)]
 
 
 def test_previous_day_correction_skips_when_hugo_urls_match(config, monkeypatch, tmp_path):

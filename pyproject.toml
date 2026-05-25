@@ -9,6 +9,7 @@ description = "Automatically summarize arXiv papers and export to Hugo-compatibl
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "arxiv-knowledge-builder>=0.1.0",
     "gitignore-parser>=0.1.11",
     "tiktoken>=0.8.0",
     "feedparser>=6.0.11",
@@ -30,6 +31,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+arxiv-knowledge-builder = { path = "vendor/arxiv-knowledge-builder", editable = true }
 torch = { index = "pytorch" }
 
 [[tool.uv.index]]
@@ -39,6 +41,7 @@ explicit = true
 
 [tool.pytest.ini_options]
 addopts = "-m 'not slow and not live_arxiv'"
+testpaths = ["tests"]
 markers = [
     "slow: tests that are slow (e.g. download models)",
     "live_arxiv: optional tests that query live arXiv and dailyarxiv endpoints",
