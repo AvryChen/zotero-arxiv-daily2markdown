@@ -80,8 +80,9 @@ def _write_minimal_knowledge_output(output_dir, *, status="updated", output_file
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "papers.jsonl").write_text("", encoding="utf-8")
-    (output_dir / "all_papers.jsonl").write_text("", encoding="utf-8")
+    paper_jsonl = "" if status == "empty_update" else '{"paper_id":"2605.00005","title":"Knowledge Paper"}\n'
+    (output_dir / "papers.jsonl").write_text(paper_jsonl, encoding="utf-8")
+    (output_dir / "all_papers.jsonl").write_text(paper_jsonl, encoding="utf-8")
     (output_dir / "domain_decisions.json").write_text("[]\n", encoding="utf-8")
     (output_dir / "paper_insights.json").write_text("[]\n", encoding="utf-8")
     (output_dir / "paper_workflows.json").write_text("[]\n", encoding="utf-8")
@@ -93,6 +94,7 @@ def _write_minimal_knowledge_output(output_dir, *, status="updated", output_file
             {
                 "mode": "incremental_daily_update",
                 "status": status,
+                "total_papers": 0 if status == "empty_update" else 1,
                 "output_dir": str(output_dir),
                 "output_files": output_files or [],
             }
@@ -752,6 +754,7 @@ def test_build_single_day_runs_empty_knowledge_update_when_no_papers_accepted(co
     assert captured_options[0].run_report_path == str(tmp_path / "capture" / "runs" / "2026-05-21.json")
     assert captured_options[0].announcement_date == "2026-05-21"
     assert (tmp_path / "site" / "data" / "knowledge" / "aligned_vocabulary.json").exists()
+    assert artifacts.knowledge_paths == []
 
 
 def test_executor_defaults_longlist_to_one_point_five_x_max(config):

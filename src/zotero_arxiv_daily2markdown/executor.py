@@ -308,6 +308,9 @@ class Executor:
         try:
             report = self._run_atomic_knowledge_update(options)
             result.knowledge_updated = True
+            if not self._knowledge_report_has_publishable_records(report):
+                logger.info("Skipping Hugo knowledge page rebuild trigger because the knowledge update has no papers")
+                return []
             return [str(path) for path in report.get("output_files", [])]
         except Exception as exc:
             result.knowledge_error = str(exc)
@@ -315,6 +318,27 @@ class Executor:
             if not self._knowledge_non_blocking():
                 raise
             return []
+
+    def _knowledge_report_has_publishable_records(self, report: dict) -> bool:
+        status = str(report.get("status") or "").lower()
+        if status in {"empty_update", "no_matching_capture_papers"}:
+            return False
+
+        total_papers = report.get("total_papers")
+        if total_papers is not None:
+            try:
+                if int(total_papers) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                logger.warning(f"Knowledge report contains non-numeric total_papers={total_papers!r}")
+
+        output_dir = Path(str(report.get("output_dir") or self._resolve_knowledge_output_dir())).expanduser()
+        papers_jsonl = output_dir / "papers.jsonl"
+        try:
+            return any(line.strip() for line in papers_jsonl.read_text(encoding="utf-8").splitlines())
+        except OSError as exc:
+            logger.warning(f"Knowledge report cannot be published because {papers_jsonl} is unreadable: {exc}")
+            return False
 
     def _run_atomic_knowledge_update(self, options) -> dict:
         final_output_dir = Path(str(options.output_dir)).expanduser()

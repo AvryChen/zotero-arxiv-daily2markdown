@@ -1,4 +1,5 @@
 import os
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -322,6 +323,18 @@ def cleanup_empty_hugo_notices(config: DictConfig) -> list[Path]:
             if EMPTY_NOTICE_MARKER in text:
                 path.unlink()
                 removed.append(path)
+        daily_dir = output_dir / lang / "daily"
+        if not daily_dir.exists():
+            continue
+        for path in daily_dir.glob("*.md"):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                logger.warning(f"Failed to read generated Hugo daily page {path}: {exc}")
+                continue
+            if 'class="arxiv-empty-notice"' in text:
+                path.unlink()
+                removed.append(path)
     if removed:
         logger.info(f"Removed {len(removed)} stale empty Hugo notice files")
         _auto_push_hugo_paths(config, removed, "Auto: Remove stale empty arXiv notices")
@@ -426,11 +439,32 @@ def _paths_include_fresh_knowledge_output(config: DictConfig, paths: Iterable[Pa
             continue
         if str(resolved) in required_paths:
             present_paths.add(str(resolved))
-    return present_paths == required_paths
+    if present_paths != required_paths:
+        return False
+    return _knowledge_package_has_publishable_records(knowledge_data_dir)
 
 
 def _missing_hugo_knowledge_input_files(knowledge_data_dir: Path) -> list[str]:
     return [name for name in HUGO_KNOWLEDGE_INPUT_FILES if not (knowledge_data_dir / name).exists()]
+
+
+def _knowledge_package_has_publishable_records(knowledge_data_dir: Path) -> bool:
+    papers_jsonl = knowledge_data_dir / "papers.jsonl"
+    try:
+        for line_number, line in enumerate(papers_jsonl.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            json.loads(stripped)
+            return True
+    except json.JSONDecodeError as exc:
+        logger.warning(f"Skipping knowledge page build because {papers_jsonl}:{line_number} is invalid JSONL: {exc}")
+        return False
+    except OSError as exc:
+        logger.warning(f"Skipping knowledge page build because {papers_jsonl} is unreadable: {exc}")
+        return False
+    logger.warning(f"Skipping knowledge page build because {papers_jsonl} contains no paper records")
+    return False
 
 
 def _run_hugo_shell_command(command: str, repo_dir: Path, *, env_overrides: dict[str, str] | None = None) -> None:
@@ -459,6 +493,8 @@ def _build_knowledge_pages_for_hugo(config: DictConfig, repo_dir: Path) -> list[
             "Knowledge data dir is missing files required by scripts/build_knowledge_demo.mjs: "
             + ", ".join(missing_inputs)
         )
+    if not _knowledge_package_has_publishable_records(knowledge_data_dir):
+        return []
 
     hugo_config = _get_config_section(config, "hugo")
     knowledge_build_command = str(hugo_config.get("knowledge_build_command", "npm run knowledge:demo"))
