@@ -63,6 +63,15 @@ knowledge:
   align_max_facets: 100
   align_max_per_paper: 5
 
+hugo:
+  output_dir: null # Hugo/前端仓库 content 目录；示例：/path/to/site/content。
+  auto_push: false # 是否自动提交并推送 Hugo/前端仓库。
+  build_knowledge_pages: true # 自动推送前，是否用最新知识库生成双语知识页并验证站点构建。
+  knowledge_data_dir: null # 传给 KNOWLEDGE_DATA_DIR；为 null 时使用 knowledge.output_dir 或前端仓库 data/knowledge。
+  knowledge_build_command: "npm run knowledge:demo" # 生成知识库网页内容的前端命令。
+  site_build_command: "npm run build" # 推送前执行的前端构建验证命令。
+  generated_content_paths: ["content/en", "content/zh"] # 知识库网页生成后要一并提交的内容目录。
+
 display:
   max_paper_num: null # 邮件和 Hugo 展示上限；为 null 时使用 executor.max_paper_num。
 

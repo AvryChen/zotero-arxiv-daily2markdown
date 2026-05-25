@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from loguru import logger
 from omegaconf import DictConfig
 from .protocol import Paper
@@ -284,6 +285,7 @@ def export_empty_notice_to_hugo(
         config,
         paths,
         f"Auto: Add empty arXiv notice for {artifacts.date_str}",
+        build_knowledge_pages=True,
     )
     return artifacts
 
@@ -312,23 +314,170 @@ def cleanup_empty_hugo_notices(config: DictConfig) -> list[Path]:
     return removed
 
 
-def _auto_push_hugo_paths(config: DictConfig, paths: list[Path], commit_msg: str) -> None:
+def _is_truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _hugo_auto_push_enabled(config: DictConfig) -> bool:
+    return _is_truthy(config.hugo.get("auto_push", False)) or _is_truthy(os.environ.get("HUGO_AUTO_PUSH", ""))
+
+
+def _resolve_hugo_repo_dir(config: DictConfig) -> Path:
+    output_dir = Path(str(config.hugo.output_dir))
+    return output_dir.parent if output_dir.name == "content" else output_dir
+
+
+def _abort_interrupted_rebase(repo_dir: Path) -> None:
+    if (repo_dir / ".git" / "rebase-merge").exists() or (repo_dir / ".git" / "rebase-apply").exists():
+        logger.warning("Detected a failed rebase. Aborting to reach a clean state.")
+        subprocess.run(["git", "rebase", "--abort"], cwd=repo_dir)
+
+
+def _pull_hugo_repo(repo_dir: Path) -> None:
+    subprocess.run(["git", "pull", "--rebase", "--autostash", "-X", "theirs"], cwd=repo_dir)
+
+
+def _prepare_hugo_repo_for_write(config: DictConfig) -> Path | None:
+    if not _hugo_auto_push_enabled(config):
+        return None
+    repo_dir = _resolve_hugo_repo_dir(config)
+    try:
+        logger.info("Starting git operations for Hugo website...")
+        _abort_interrupted_rebase(repo_dir)
+        logger.info("Pulling latest changes from remote...")
+        _pull_hugo_repo(repo_dir)
+    except Exception as exc:
+        logger.warning(f"Initial git pull failed: {exc}. Proceeding anyway...")
+    return repo_dir
+
+
+def _get_config_section(config: DictConfig, section: str):
+    return config.get(section, {}) if hasattr(config, "get") else {}
+
+
+def _hugo_knowledge_pages_enabled(config: DictConfig) -> bool:
+    hugo_config = _get_config_section(config, "hugo")
+    knowledge_config = _get_config_section(config, "knowledge")
+    return _is_truthy(hugo_config.get("build_knowledge_pages", True)) and _is_truthy(
+        knowledge_config.get("enabled", False)
+    )
+
+
+def _resolve_knowledge_data_dir(config: DictConfig, repo_dir: Path) -> Path:
+    hugo_config = _get_config_section(config, "hugo")
+    knowledge_config = _get_config_section(config, "knowledge")
+    configured = hugo_config.get("knowledge_data_dir") or knowledge_config.get("output_dir")
+    if configured:
+        path = Path(str(configured)).expanduser()
+        return path if path.is_absolute() else repo_dir / path
+    return repo_dir / "data" / "knowledge"
+
+
+def _resolve_generated_content_paths(config: DictConfig, repo_dir: Path) -> list[Path]:
+    hugo_config = _get_config_section(config, "hugo")
+    configured = hugo_config.get("generated_content_paths") or ["content/en", "content/zh"]
+    return [
+        path if path.is_absolute() else repo_dir / path
+        for path in (Path(str(item)) for item in configured)
+    ]
+
+
+def _dedupe_paths(paths: Iterable[Path | str]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        path_obj = Path(path)
+        key = str(path_obj)
+        if key not in seen:
+            deduped.append(path_obj)
+            seen.add(key)
+    return deduped
+
+
+def _paths_include_fresh_knowledge_output(config: DictConfig, paths: Iterable[Path | str], repo_dir: Path) -> bool:
+    if not _hugo_knowledge_pages_enabled(config):
+        return False
+    knowledge_data_dir = _resolve_knowledge_data_dir(config, repo_dir).resolve()
+    for path in paths:
+        path_obj = Path(path)
+        if not path_obj.is_absolute():
+            path_obj = repo_dir / path_obj
+        try:
+            if path_obj.resolve().is_relative_to(knowledge_data_dir):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _run_hugo_shell_command(command: str, repo_dir: Path, *, env_overrides: dict[str, str] | None = None) -> None:
+    env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
+    subprocess.run(command, cwd=repo_dir, shell=True, env=env, check=True)
+
+
+def _build_knowledge_pages_for_hugo(config: DictConfig, repo_dir: Path) -> list[Path]:
+    if not _hugo_knowledge_pages_enabled(config):
+        return []
+    if not (repo_dir / "package.json").exists():
+        logger.warning(f"Skipping knowledge page build because {repo_dir / 'package.json'} does not exist")
+        return []
+
+    knowledge_data_dir = _resolve_knowledge_data_dir(config, repo_dir)
+    if not knowledge_data_dir.exists():
+        raise FileNotFoundError(
+            f"Knowledge data dir does not exist: {knowledge_data_dir}. "
+            "Run the incremental knowledge update before publishing Hugo."
+        )
+
+    hugo_config = _get_config_section(config, "hugo")
+    knowledge_build_command = str(hugo_config.get("knowledge_build_command", "npm run knowledge:demo"))
+    site_build_command = str(hugo_config.get("site_build_command", "npm run build"))
+
+    logger.info(f"Generating knowledge pages from {knowledge_data_dir}")
+    _run_hugo_shell_command(
+        knowledge_build_command,
+        repo_dir,
+        env_overrides={"KNOWLEDGE_DATA_DIR": str(knowledge_data_dir)},
+    )
+    logger.info("Validating Hugo site build")
+    _run_hugo_shell_command(site_build_command, repo_dir)
+    return _resolve_generated_content_paths(config, repo_dir)
+
+
+def _auto_push_hugo_paths(
+    config: DictConfig,
+    paths: list[Path],
+    commit_msg: str,
+    *,
+    build_knowledge_pages: bool = False,
+    pull_first: bool = True,
+) -> None:
     if not paths:
         return
-    if not (config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1")):
+    if not _hugo_auto_push_enabled(config):
         return
-    output_dir = Path(str(config.hugo.output_dir))
-    repo_dir = output_dir.parent if output_dir.name == "content" else output_dir
+    repo_dir = _resolve_hugo_repo_dir(config)
     try:
-        if (repo_dir / ".git" / "rebase-merge").exists() or (repo_dir / ".git" / "rebase-apply").exists():
-            logger.warning("Detected a failed rebase. Aborting to reach a clean state.")
-            subprocess.run(["git", "rebase", "--abort"], cwd=repo_dir)
-        subprocess.run(["git", "pull", "--rebase", "--autostash", "-X", "theirs"], cwd=repo_dir)
-        subprocess.run(["git", "add", "--", *(str(path) for path in paths)], cwd=repo_dir, check=True)
+        if pull_first:
+            _abort_interrupted_rebase(repo_dir)
+            _pull_hugo_repo(repo_dir)
+        all_paths = list(paths)
+        if build_knowledge_pages and _paths_include_fresh_knowledge_output(config, all_paths, repo_dir):
+            all_paths.extend(_build_knowledge_pages_for_hugo(config, repo_dir))
+        elif build_knowledge_pages and _hugo_knowledge_pages_enabled(config):
+            logger.info("Skipping knowledge page build because this run did not provide fresh knowledge output paths")
+        subprocess.run(["git", "add", "--", *(str(path) for path in _dedupe_paths(all_paths))], cwd=repo_dir, check=True)
         status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
         if status:
             subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir, check=True)
             subprocess.run(["git", "push"], cwd=repo_dir, check=True)
+            logger.info("Successfully pushed to GitHub!")
+        else:
+            logger.info("No changes to commit.")
     except subprocess.CalledProcessError as exc:
         logger.error(f"Git operation failed. Error: {exc}")
     except Exception as exc:
@@ -472,28 +621,10 @@ def export_to_hugo(
 ):
     if not hasattr(config, "hugo") or not config.hugo.get("output_dir"):
         return
+    _prepare_hugo_repo_for_write(config)
     artifacts = build_hugo_export_artifacts(papers, config, overview_zh=overview_zh, overview_en=overview_en)
     os.makedirs(os.path.dirname(artifacts.filepath_zh), exist_ok=True)
     os.makedirs(os.path.dirname(artifacts.filepath_en), exist_ok=True)
-    
-    # Auto push to Github
-    if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
-        logger.info("Starting git operations for Hugo website...")
-        output_dir = config.hugo.output_dir
-        repo_dir = os.path.dirname(output_dir) if os.path.basename(output_dir) == "content" else output_dir
-        
-        try:
-            # Check if we are in a middle of a failed rebase/merge and abort it
-            if os.path.exists(os.path.join(repo_dir, ".git", "rebase-merge")) or \
-               os.path.exists(os.path.join(repo_dir, ".git", "rebase-apply")):
-                logger.warning("Detected a failed rebase. Aborting to reach a clean state.")
-                subprocess.run(["git", "rebase", "--abort"], cwd=repo_dir)
-
-            logger.info("Pulling latest changes from remote...")
-            # Use --autostash to keep any local changes safe
-            subprocess.run(["git", "pull", "--rebase", "--autostash", "-X", "theirs"], cwd=repo_dir)
-        except Exception as e:
-            logger.warning(f"Initial git pull failed: {e}. Proceeding anyway...")
 
     with open(artifacts.filepath_zh, "w", encoding="utf-8") as f:
         f.write(artifacts.content_zh)
@@ -502,27 +633,14 @@ def export_to_hugo(
         f.write(artifacts.content_en)
         
     logger.info(f"Hugo markdown exported successfully to {artifacts.filepath_zh} and {artifacts.filepath_en}")
-    
-    # Commit and Push
-    if config.hugo.get("auto_push", False) or str(os.environ.get("HUGO_AUTO_PUSH", "")).lower() in ("true", "1"):
-        try:
-            paths_to_add = [artifacts.filepath_zh, artifacts.filepath_en]
-            if extra_paths:
-                paths_to_add.extend(str(path) for path in extra_paths)
-            subprocess.run(["git", "add", "--", *paths_to_add], cwd=repo_dir, check=True)
-            commit_msg = f"Auto: Add arXiv daily for {artifacts.date_str}"
-            # Check if there are changes to commit
-            status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_dir, capture_output=True, text=True).stdout
-            if status:
-                subprocess.run(["git", "commit", "-m", commit_msg], cwd=repo_dir)
-                logger.info("Committing changes...")
-            else:
-                logger.info("No changes to commit.")
-            
-            logger.info("Pushing to remote...")
-            subprocess.run(["git", "push"], cwd=repo_dir, check=True)
-            logger.info("Successfully pushed to GitHub!")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Git operation failed. Error: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error during git push: {e}")
+
+    paths_to_add = [Path(artifacts.filepath_zh), Path(artifacts.filepath_en)]
+    if extra_paths:
+        paths_to_add.extend(Path(path) for path in extra_paths)
+    _auto_push_hugo_paths(
+        config,
+        paths_to_add,
+        f"Auto: Add arXiv daily for {artifacts.date_str}",
+        build_knowledge_pages=True,
+        pull_first=False,
+    )
