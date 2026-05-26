@@ -6,6 +6,8 @@ Zotero arXiv Daily to Markdown builds a daily research digest from arXiv papers.
 
 This repository is a customized fork of [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily). The current version focuses on reliable arXiv access: global request throttling, cache reuse, failure alerts, historical backfill cooldowns, and optional V2rayN-compatible proxy support.
 
+For maintainers and future AI coding agents, read [the maintenance manual](./docs/maintenance_manual.md) before changing the pipeline. It explains the producer/knowledge/site boundaries, file ownership, output contracts, and the checks required after edits.
+
 ## Features
 
 - Fetch papers from an explicit arXiv announcement date; the default scheduled run processes yesterday's date with the same target-date path.

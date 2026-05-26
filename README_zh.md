@@ -6,6 +6,8 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 
 本项目基于 [TideDra/zotero-arxiv-daily](https://github.com/TideDra/zotero-arxiv-daily) 二次开发。当前版本重点强化了 arXiv 访问可靠性：全局请求限速、本地缓存、失败告警、历史回溯冷却，以及可选的 V2rayN 代理支持。
 
+后续维护者和接手修改的 AI 应先阅读 [维护手册](./docs/maintenance_manual.md)。它记录了生成端、知识库、网站端之间的边界、文件归属、输出契约和修改后的验证要求。
+
 ## 功能
 
 - 从指定 arXiv 公告日期抓取论文；默认定时运行会处理昨天的公告日期，并走和手动 target-date 相同的路径。
