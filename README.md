@@ -365,7 +365,7 @@ run_daily.bat
 GitHub Actions workflows:
 
 - `.github/workflows/main.yml` runs the digest workflow manually with repository variables and secrets.
-- `.github/workflows/test.yml` runs a debug digest workflow manually.
+- `.github/workflows/test.yml` runs the same digest entrypoint manually against the checked-out repository.
 - `.github/workflows/ci.yml` runs the test suite on pushes and pull requests.
 - `.github/workflows/keep-alive.yml` periodically updates a keep-alive file for scheduled workflows.
 

@@ -365,7 +365,7 @@ run_daily.bat
 GitHub Actions 工作流：
 
 - `.github/workflows/main.yml` 手动运行每日推送流程，使用仓库变量和 secrets。
-- `.github/workflows/test.yml` 手动运行 debug 推送流程。
+- `.github/workflows/test.yml` 手动用当前仓库入口运行同一套推送流程。
 - `.github/workflows/ci.yml` 在 push 和 pull request 时运行测试。
 - `.github/workflows/keep-alive.yml` 定期更新 keep-alive 文件，避免计划任务被 GitHub 自动停用。
 

@@ -11,6 +11,12 @@ jobs:
         with:
           repository: ${{ vars.REPOSITORY }}
           ref: ${{ vars.REF }}
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
