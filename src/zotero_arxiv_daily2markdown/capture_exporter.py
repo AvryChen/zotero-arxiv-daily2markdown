@@ -236,7 +236,7 @@ def _upsert_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
         existing[str(row.get("paper_id"))] = row
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + os.linesep for row in existing.values()),
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in existing.values()),
         encoding="utf-8",
     )
 

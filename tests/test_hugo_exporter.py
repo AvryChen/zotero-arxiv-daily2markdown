@@ -10,6 +10,7 @@ from zotero_arxiv_daily2markdown.hugo_exporter import (
     cleanup_empty_hugo_notices,
     export_empty_notice_to_hugo,
     export_to_hugo,
+    _hugo_auto_push_enabled,
     _render_post_markdown,
     _render_empty_notice_markdown,
     extract_hugo_paper_urls,
@@ -113,6 +114,13 @@ def test_extract_hugo_paper_urls_parses_link_lines():
         "https://arxiv.org/abs/2605.00001v1",
         "https://arxiv.org/abs/2605.00002v1",
     ]
+
+
+def test_hugo_auto_push_config_false_overrides_env(monkeypatch):
+    monkeypatch.setenv("HUGO_AUTO_PUSH", "true")
+    config = OmegaConf.create({"hugo": {"output_dir": "content", "auto_push": False}})
+
+    assert _hugo_auto_push_enabled(config) is False
 
 
 def test_export_empty_notice_and_cleanup_only_marked_posts(tmp_path):

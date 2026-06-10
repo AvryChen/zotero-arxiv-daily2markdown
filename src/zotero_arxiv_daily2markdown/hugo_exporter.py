@@ -348,7 +348,10 @@ def _is_truthy(value) -> bool:
 
 
 def _hugo_auto_push_enabled(config: DictConfig) -> bool:
-    return _is_truthy(config.hugo.get("auto_push", False)) or _is_truthy(os.environ.get("HUGO_AUTO_PUSH", ""))
+    configured = config.hugo.get("auto_push", None)
+    if configured is not None:
+        return _is_truthy(configured)
+    return _is_truthy(os.environ.get("HUGO_AUTO_PUSH", ""))
 
 
 def _resolve_hugo_repo_dir(config: DictConfig) -> Path:
