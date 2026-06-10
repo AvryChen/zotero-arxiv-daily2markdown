@@ -297,7 +297,7 @@ class Executor:
             batch_size=int(knowledge_config.get("batch_size", 16) or 16),
             full_text_char_budget=int(knowledge_config.get("full_text_char_budget", 120000) or 120000),
             run_alignment=to_bool(knowledge_config.get("run_alignment", True)),
-            run_vocabulary_review=to_bool(knowledge_config.get("run_vocabulary_review", True)),
+            run_vocabulary_review=to_bool(knowledge_config.get("run_vocabulary_review", False)),
             vocabulary_review_max_terms_per_type=int(knowledge_config.get("vocabulary_review_max_terms_per_type", 250) or 250),
             align_max_facets=int(knowledge_config.get("align_max_facets", 100) or 100),
             align_max_per_paper=int(knowledge_config.get("align_max_per_paper", 5) or 5),
