@@ -300,7 +300,7 @@ def export_empty_notice_to_hugo(
         config,
         paths,
         f"Auto: Add empty arXiv notice for {artifacts.date_str}",
-        build_knowledge_pages=True,
+        build_knowledge_pages=False,
     )
     return artifacts
 

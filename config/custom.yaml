@@ -33,3 +33,4 @@ reranker:
 
 hugo:
   output_dir: ${oc.env:HUGO_OUTPUT_DIR,null}
+  auto_push: true
