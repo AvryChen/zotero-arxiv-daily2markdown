@@ -14,6 +14,7 @@ test.ipynb
 
 logs
 *.log
+*.log.backup
 models
 test-compose.yml
 outputs
