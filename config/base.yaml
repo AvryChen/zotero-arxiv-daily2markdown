@@ -17,6 +17,18 @@ email:
   smtp_timeout_seconds: 20 # SMTP 连接、登录和发送的超时时间，避免网络异常时一直卡住。示例：20
   sender_password: ??? # 发件邮箱的 SMTP 密码或授权码，通常不是邮箱登录密码。示例：abcdefghijklmn
 
+resend_email:
+  enabled: false # 是否启用 Resend 邮件发送。示例：true
+  api_key: ??? # Resend API Key (re_xxxxx)，用作 SMTP 密码。
+  sender_name: "arXiv Daily" # Resend 发件人显示名称。
+  sender_email: "daily@nickelates.uk" # Resend 发件人邮箱地址（需在 Resend 中验证的域名）。
+  smtp_server: "smtp.resend.com" # Resend SMTP 服务器。
+  smtp_port: 465 # Resend SMTP 端口 (SSL)。
+  smtp_timeout_seconds: 20 # SMTP 连接超时时间。
+  recipients_zh: [] # 中文版日报收件人列表。在 custom.yaml 中通过环境变量配置。
+  recipients_en: [] # 英文版日报收件人列表。在 custom.yaml 中通过环境变量配置。
+  unsubscribe_note: "To unsubscribe, email support@nickelates.uk with subject 'unsubscribe'." # 退订说明。
+
 llm:
   api:
     key: ??? # 大模型 API Key。示例：sk-xxx

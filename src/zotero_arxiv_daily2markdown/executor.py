@@ -14,8 +14,8 @@ import random
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from .reranker import get_reranker_cls
-from .construct_email import render_email
-from .utils import send_email
+from .construct_email import render_email, render_emails_resend
+from .utils import send_email, send_email_resend
 from .hugo_exporter import (
     build_hugo_export_artifacts,
     cleanup_empty_hugo_notices,
@@ -726,6 +726,61 @@ class Executor:
         except Exception as exc:
             logger.warning(f"Revision email failed for {target_date}; continuing without email: {exc}")
 
+    def _send_resend_emails(self, artifacts: "SingleDayArtifacts") -> bool:
+        """Send bilingual daily emails via Resend to separate zh/en recipient lists.
+
+        Returns:
+            ``True`` if at least one email was sent successfully.
+        """
+        try:
+            htmls = render_emails_resend(
+                artifacts.papers,
+                overview_zh=artifacts.overview_zh,
+                overview_en=artifacts.overview_en,
+            )
+        except Exception as exc:
+            logger.warning(f"Resend: failed to build email HTML: {exc}")
+            return False
+
+        target_date = self.config.executor.get("target_date") or None
+        try:
+            results = send_email_resend(
+                self.config,
+                htmls["zh"],
+                htmls["en"],
+                subject_date=str(target_date) if target_date else None,
+            )
+        except Exception as exc:
+            logger.warning(f"Resend: failed to send emails: {exc}")
+            return False
+
+        any_sent = False
+        for lang, r in results.items():
+            if r and r.get("sent"):
+                any_sent = True
+                logger.info(f"Resend {lang}: sent to {r.get('recipients', '?')} recipient(s)")
+            elif r:
+                logger.warning(f"Resend {lang}: skipped ({r.get('reason', r.get('error', 'unknown'))})")
+
+        return any_sent
+
+    def _resend_email_enabled(self) -> bool:
+        """Check whether Resend email sending is configured and enabled."""
+        if not hasattr(self.config, "resend_email"):
+            return False
+        cfg = self.config.resend_email
+        if not to_bool(cfg.get("enabled", False)):
+            return False
+        if not cfg.get("api_key") or cfg.get("api_key") == "???":
+            logger.info("Resend: API key not configured, skipping.")
+            return False
+        recipients_zh_raw = cfg.get("recipients_zh", "")
+        recipients_en_raw = cfg.get("recipients_en", "")
+        if not recipients_zh_raw.strip() and not recipients_en_raw.strip():
+            logger.info("Resend: no recipients configured, skipping.")
+            return False
+        return True
+
     def _cleanup_empty_hugo_notices(self) -> None:
         cleanup_empty_hugo_notices(self.config)
 
@@ -868,6 +923,14 @@ class Executor:
                 logger.warning(f"Email failed; continuing without email: {exc}")
         else:
             logger.info("Skipping email for this run.")
+
+        # ── Resend bilingual email (new, independent) ─────────────────
+        if self._resend_email_enabled():
+            logger.info("Sending Resend bilingual emails...")
+            try:
+                self._send_resend_emails(artifacts)
+            except Exception as exc:
+                logger.warning(f"Resend email failed; continuing without it: {exc}")
 
         export_to_hugo(
             artifacts.papers,

@@ -154,3 +154,104 @@ def send_email(config:DictConfig, html:str, subject: str | None = None):
         server.sendmail(sender, [receiver], msg.as_string())
     finally:
         server.quit()
+
+
+# ── Resend email sender (new, bilingual, separate from legacy QQ SMTP) ─────
+
+def _parse_recipients(raw: str) -> list[str]:
+    """Parse a comma/semicolon/newline-separated recipient string into a list.
+
+    Handles env-var style strings like ``"a@b.com, c@d.com"``.
+    """
+    if not raw or not raw.strip():
+        return []
+    # Split on commas, semicolons, or newlines
+    parts = re.split(r"[,;\n]+", raw)
+    return [p.strip() for p in parts if p.strip() and "@" in p]
+
+
+def send_email_resend(
+    config: DictConfig,
+    html_zh: str,
+    html_en: str,
+    *,
+    subject_date: str | None = None,
+) -> dict:
+    """Send bilingual daily emails to separate zh/en lists via Resend SMTP.
+
+    Does **not** touch the legacy ``send_email()`` (QQ SMTP) code path.
+
+    Args:
+        config: Hydra config; expects a ``resend_email`` section.
+        html_zh: Chinese email HTML body (with overview + TLDRs).
+        html_en: English email HTML body.
+        subject_date: ``YYYY-MM-DD`` date label for the subject line.
+
+    Returns:
+        ``{"zh": {...}, "en": {...}}`` with per-language send results.
+    """
+    cfg = config.resend_email
+    api_key = cfg.api_key
+    sender = formataddr((
+        Header(cfg.sender_name, "utf-8").encode(),
+        cfg.sender_email,
+    ))
+    smtp_server = cfg.smtp_server
+    smtp_port = int(cfg.smtp_port)
+    smtp_timeout = float(cfg.get("smtp_timeout_seconds", 20))
+
+    recipients_zh = _parse_recipients(cfg.recipients_zh)
+    recipients_en = _parse_recipients(cfg.recipients_en)
+
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    date_label = subject_date or today
+
+    _LABELS = {
+        "zh": {"subject": f"arXiv Daily 镍基超导日报 — {date_label}"},
+        "en": {"subject": f"arXiv Daily: Nickelate Superconductors — {date_label}"},
+    }
+
+    results: dict = {"zh": None, "en": None}
+
+    for lang, html_body, recipients in [
+        ("zh", html_zh, recipients_zh),
+        ("en", html_en, recipients_en),
+    ]:
+        if not recipients:
+            logger.info(f"Resend: no {lang} recipients configured, skipping.")
+            results[lang] = {"sent": False, "reason": "no_recipients"}
+            continue
+
+        # Open one SMTP connection, reuse for all recipients
+        try:
+            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=smtp_timeout)
+            server.login("resend", api_key)
+        except Exception as exc:
+            logger.warning(f"Resend {lang}: SMTP_SSL connection failed: {exc}")
+            results[lang] = {"sent": False, "error": str(exc)}
+            continue
+
+        sent_count = 0
+        last_error = None
+        try:
+            for recipient in recipients:
+                msg = MIMEText(html_body, "html", "utf-8")
+                msg["From"] = sender
+                msg["To"] = recipient
+                msg["Subject"] = Header(_LABELS[lang]["subject"], "utf-8").encode()
+                try:
+                    server.sendmail(cfg.sender_email, [recipient], msg.as_string())
+                    sent_count += 1
+                    logger.info(f"Resend {lang} email sent to {recipient}")
+                except Exception as exc:
+                    logger.warning(f"Resend {lang} email to {recipient} failed: {exc}")
+                    last_error = str(exc)
+        finally:
+            server.quit()
+
+        if sent_count > 0:
+            results[lang] = {"sent": True, "recipients": sent_count}
+        else:
+            results[lang] = {"sent": False, "error": last_error or "unknown"}
+
+    return results

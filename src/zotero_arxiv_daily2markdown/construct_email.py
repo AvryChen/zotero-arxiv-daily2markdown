@@ -1,4 +1,5 @@
 from .protocol import Paper
+from datetime import datetime
 import math
 import html
 
@@ -117,6 +118,243 @@ def get_stars(score:float):
         half_star_num = star_num - full_star_num * 2
         return '<div class="star-wrapper">'+full_star * full_star_num + half_star * half_star_num + '</div>'
 
+
+# ── Resend email (new, bilingual) ──────────────────────────────────────────
+
+_RESEND_LABELS = {
+    "zh": {
+        "header_title": "arXiv Daily: 镍基超导日报",
+        "overview_label": "今日速览",
+        "relevance": "相关度",
+        "tldr": "摘要",
+        "authors": "作者",
+        "affiliations": "机构",
+        "pdf": "查看PDF",
+        "no_papers": "今日无相关论文，休息一下！",
+        "unsubscribe": "如需退订，请发送邮件至 support@nickelates.uk，主题为 'unsubscribe'。",
+        "subject": "arXiv Daily 镍基超导日报",
+    },
+    "en": {
+        "header_title": "arXiv Daily: Nickelate Superconductors",
+        "overview_label": "Today's Overview",
+        "relevance": "Relevance",
+        "tldr": "TL;DR",
+        "authors": "Authors",
+        "affiliations": "Affiliations",
+        "pdf": "View PDF",
+        "no_papers": "No Papers Today. Take a Rest!",
+        "unsubscribe": "To unsubscribe, email support@nickelates.uk with subject 'unsubscribe'.",
+        "subject": "arXiv Daily: Nickelate Superconductors",
+    },
+}
+
+_RESEND_CSS = """
+  body {
+    margin: 0; padding: 0; background-color: #f5f0e8;
+    font-family: 'Georgia', 'Times New Roman', serif;
+  }
+  .container {
+    max-width: 640px; margin: 0 auto; background-color: #ffffff;
+    border: 1px solid #e0d8c8;
+  }
+  .header {
+    background: linear-gradient(135deg, #8b6914 0%, #b8860b 50%, #d4a017 100%);
+    padding: 28px 24px; text-align: center;
+  }
+  .header h1 {
+    color: #ffffff; margin: 0; font-size: 22px; font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .header .date {
+    color: rgba(255,255,255,0.85); font-size: 13px; margin-top: 6px;
+  }
+  .overview {
+    padding: 20px 24px; background-color: #fdfaf3;
+    border-bottom: 1px solid #e8e0d0;
+  }
+  .overview h2 {
+    color: #8b6914; font-size: 16px; margin: 0 0 10px 0;
+  }
+  .overview p {
+    color: #4a4030; font-size: 14px; line-height: 1.7; margin: 0;
+  }
+  .paper {
+    padding: 20px 24px; border-bottom: 1px solid #f0ebe0;
+  }
+  .paper-title {
+    font-size: 17px; font-weight: 700; color: #2a2218;
+    margin: 0 0 8px 0; line-height: 1.4;
+  }
+  .paper-meta {
+    font-size: 13px; color: #8a7a60; margin-bottom: 10px; line-height: 1.5;
+  }
+  .paper-meta strong { color: #6b5a40; }
+  .tldr {
+    font-size: 14px; color: #3a3028; line-height: 1.6;
+    background-color: #fdfaf3; padding: 12px 16px;
+    border-left: 3px solid #d4a017; margin-bottom: 10px;
+  }
+  .pdf-btn {
+    display: inline-block; padding: 8px 20px;
+    background-color: #b8860b; color: #ffffff !important;
+    text-decoration: none; border-radius: 4px;
+    font-size: 13px; font-weight: 600;
+  }
+  .footer {
+    padding: 20px 24px; text-align: center;
+    font-size: 11px; color: #b0a090;
+    background-color: #fdfaf3;
+  }
+  .footer a { color: #8b6914; text-decoration: none; }
+  .badge {
+    display: inline-block; padding: 2px 10px;
+    background-color: #f0e8d5; color: #8b6914;
+    border-radius: 10px; font-size: 12px; font-weight: 600;
+    margin-bottom: 10px;
+  }
+"""
+
+_RESEND_FRAMEWORK = f"""<!DOCTYPE html>
+<html lang="{{lang}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <style>{_RESEND_CSS}</style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>{{header_title}}</h1>
+      <div class="date">{{date}}</div>
+    </div>
+    {{overview_block}}
+    {{paper_blocks}}
+    <div class="footer">
+      <p>{{unsubscribe}}</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def _render_one_paper_resend(p: Paper, labels: dict, language: str, *, max_authors: int = 5, max_affiliations: int = 5) -> str:
+    """Render a single paper block for the Resend email."""
+    author_list = [a for a in p.authors]
+    num_authors = len(author_list)
+    if num_authors <= max_authors:
+        authors = ", ".join(author_list)
+    else:
+        authors = ", ".join(author_list[:3] + ["..."] + author_list[-2:])
+
+    if p.affiliations:
+        aff_list = p.affiliations[:max_affiliations]
+        affiliations = ", ".join(aff_list)
+        if len(p.affiliations) > max_affiliations:
+            affiliations += ", ..."
+    else:
+        affiliations = None
+
+    score = round(p.score, 1) if p.score is not None else None
+
+    meta_parts = []
+    if authors:
+        meta_parts.append(f"<strong>{labels['authors']}:</strong> {html.escape(authors)}")
+    if affiliations:
+        meta_parts.append(f"<strong>{labels['affiliations']}:</strong> {html.escape(affiliations)}")
+    if score is not None:
+        meta_parts.append(f"<strong>{labels['relevance']}:</strong> {score}")
+
+    meta_html = "<br>".join(meta_parts) if meta_parts else ""
+
+    # Pick language-specific TLDR
+    tldr_text = p.tldr_en if language == "en" else p.tldr
+    tldr_text = tldr_text or ""
+
+    return f"""
+    <div class="paper">
+      <div class="paper-title">{html.escape(p.title)}</div>
+      <div class="paper-meta">{meta_html}</div>
+      <div class="tldr"><strong>{labels['tldr']}:</strong> {html.escape(tldr_text)}</div>
+      <a href="{html.escape(p.pdf_url or '#')}" class="pdf-btn">{labels['pdf']}</a>
+    </div>"""
+
+
+def render_email_resend(
+    papers: list[Paper],
+    *,
+    language: str,
+    overview: str = "",
+    revision_note: str | None = None,
+) -> str:
+    """Build a language-specific HTML email for Resend delivery.
+
+    Args:
+        papers: List of papers to include.
+        language: 'zh' or 'en'.
+        overview: Language-specific daily overview text.
+        revision_note: Optional revision banner text.
+    """
+    labels = _RESEND_LABELS.get(language, _RESEND_LABELS["en"])
+    today = datetime.now().strftime("%Y-%m-%d")
+    title = f"{labels['subject']} — {today}"
+
+    # Overview block
+    overview_block = ""
+    if overview:
+        overview_block = f"""
+    <div class="overview">
+      <h2>{labels['overview_label']}</h2>
+      <p>{html.escape(overview)}</p>
+    </div>"""
+
+    # Paper blocks
+    if not papers:
+        paper_blocks = f"""
+    <div class="paper">
+      <div class="paper-title">{labels['no_papers']}</div>
+    </div>"""
+    else:
+        parts = []
+        if revision_note:
+            parts.append(f"""
+    <div class="paper" style="background-color:#fff8e6;border-left:3px solid #f0ad4e;">
+      <div class="paper-title" style="color:#8a5a00;">{html.escape(revision_note)}</div>
+    </div>""")
+        for p in papers:
+            parts.append(_render_one_paper_resend(p, labels, language))
+        paper_blocks = "\n".join(parts)
+
+    email_html = _RESEND_FRAMEWORK
+    email_html = email_html.replace("{lang}", "zh-CN" if language == "zh" else "en")
+    email_html = email_html.replace("{title}", html.escape(title))
+    email_html = email_html.replace("{header_title}", labels["header_title"])
+    email_html = email_html.replace("{date}", today)
+    email_html = email_html.replace("{overview_block}", overview_block)
+    email_html = email_html.replace("{paper_blocks}", paper_blocks)
+    email_html = email_html.replace("{unsubscribe}", labels["unsubscribe"])
+
+    return email_html
+
+
+def render_emails_resend(
+    papers: list[Paper],
+    overview_zh: str = "",
+    overview_en: str = "",
+    revision_note: str | None = None,
+) -> dict[str, str]:
+    """Build both zh and en Resend emails.
+
+    Returns:
+        dict with 'zh' and 'en' HTML strings.
+    """
+    return {
+        "zh": render_email_resend(papers, language="zh", overview=overview_zh, revision_note=revision_note),
+        "en": render_email_resend(papers, language="en", overview=overview_en, revision_note=revision_note),
+    }
+
+
+# ── Legacy email (QQ SMTP, unchanged) ──────────────────────────────────────
 
 def render_email(papers:list[Paper], revision_note: str | None = None) -> str:
     parts = []

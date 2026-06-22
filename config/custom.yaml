@@ -10,6 +10,18 @@ email:
   smtp_port: 465
   sender_password: ${oc.env:SENDER_PASSWORD}
 
+resend_email:
+  enabled: ${oc.env:RESEND_ENABLED,"false"}
+  api_key: ${oc.env:RESEND_API_KEY,???}
+  sender_name: ${oc.env:RESEND_SENDER_NAME,"arXiv Daily"}
+  sender_email: ${oc.env:RESEND_SENDER_EMAIL,"daily@nickelates.uk"}
+  smtp_server: smtp.resend.com
+  smtp_port: 465
+  smtp_timeout_seconds: 20
+  recipients_zh: ${oc.env:RECIPIENTS_ZH,""}
+  recipients_en: ${oc.env:RECIPIENTS_EN,""}
+  unsubscribe_note: ${oc.env:RESEND_UNSUBSCRIBE_NOTE,"To unsubscribe, email support@nickelates.uk with subject 'unsubscribe'."}
+
 llm:
   api:
     key: ${oc.env:OPENAI_API_KEY}
