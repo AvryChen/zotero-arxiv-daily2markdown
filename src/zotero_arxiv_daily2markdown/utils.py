@@ -191,15 +191,6 @@ def send_email_resend(
         ``{"zh": {...}, "en": {...}}`` with per-language send results.
     """
     cfg = config.resend_email
-    api_key = cfg.api_key
-    sender = formataddr((
-        Header(cfg.sender_name, "utf-8").encode(),
-        cfg.sender_email,
-    ))
-    smtp_server = cfg.smtp_server
-    smtp_port = int(cfg.smtp_port)
-    smtp_timeout = float(cfg.get("smtp_timeout_seconds", 20))
-
     recipients_zh = _parse_recipients(cfg.recipients_zh)
     recipients_en = _parse_recipients(cfg.recipients_en)
 
@@ -217,41 +208,74 @@ def send_email_resend(
         ("zh", html_zh, recipients_zh),
         ("en", html_en, recipients_en),
     ]:
-        if not recipients:
-            logger.info(f"Resend: no {lang} recipients configured, skipping.")
-            results[lang] = {"sent": False, "reason": "no_recipients"}
-            continue
-
-        # Open one SMTP connection, reuse for all recipients
-        try:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=smtp_timeout)
-            server.login("resend", api_key)
-        except Exception as exc:
-            logger.warning(f"Resend {lang}: SMTP_SSL connection failed: {exc}")
-            results[lang] = {"sent": False, "error": str(exc)}
-            continue
-
-        sent_count = 0
-        last_error = None
-        try:
-            for recipient in recipients:
-                msg = MIMEText(html_body, "html", "utf-8")
-                msg["From"] = sender
-                msg["To"] = recipient
-                msg["Subject"] = Header(_LABELS[lang]["subject"], "utf-8").encode()
-                try:
-                    server.sendmail(cfg.sender_email, [recipient], msg.as_string())
-                    sent_count += 1
-                    logger.info(f"Resend {lang} email sent to {recipient}")
-                except Exception as exc:
-                    logger.warning(f"Resend {lang} email to {recipient} failed: {exc}")
-                    last_error = str(exc)
-        finally:
-            server.quit()
-
-        if sent_count > 0:
-            results[lang] = {"sent": True, "recipients": sent_count}
-        else:
-            results[lang] = {"sent": False, "error": last_error or "unknown"}
+        results[lang] = send_resend_html(
+            config,
+            html_body,
+            recipients,
+            _LABELS[lang]["subject"],
+            label=lang,
+        )
 
     return results
+
+
+def send_resend_html(
+    config: DictConfig,
+    html_body: str,
+    recipients: str | list[str] | tuple[str, ...],
+    subject: str,
+    *,
+    label: str = "email",
+) -> dict:
+    """Send one Resend HTML email body to explicit recipients.
+
+    This is for manual emails such as subscription welcome messages. It does
+    not read the configured zh/en daily lists unless the caller passes them in.
+    """
+    cfg = config.resend_email
+    if isinstance(recipients, str):
+        recipient_list = _parse_recipients(recipients)
+    else:
+        recipient_list = [str(recipient).strip() for recipient in recipients if "@" in str(recipient)]
+
+    if not recipient_list:
+        logger.info(f"Resend: no {label} recipients configured, skipping.")
+        return {"sent": False, "reason": "no_recipients"}
+
+    sender = formataddr((
+        Header(cfg.sender_name, "utf-8").encode(),
+        cfg.sender_email,
+    ))
+
+    try:
+        server = smtplib.SMTP_SSL(
+            cfg.smtp_server,
+            int(cfg.smtp_port),
+            timeout=float(cfg.get("smtp_timeout_seconds", 20)),
+        )
+        server.login("resend", cfg.api_key)
+    except Exception as exc:
+        logger.warning(f"Resend {label}: SMTP_SSL connection failed: {exc}")
+        return {"sent": False, "error": str(exc)}
+
+    sent_count = 0
+    last_error = None
+    try:
+        for recipient in recipient_list:
+            msg = MIMEText(html_body, "html", "utf-8")
+            msg["From"] = sender
+            msg["To"] = recipient
+            msg["Subject"] = Header(subject, "utf-8").encode()
+            try:
+                server.sendmail(cfg.sender_email, [recipient], msg.as_string())
+                sent_count += 1
+                logger.info(f"Resend {label} email sent to {recipient}")
+            except Exception as exc:
+                logger.warning(f"Resend {label} email to {recipient} failed: {exc}")
+                last_error = str(exc)
+    finally:
+        server.quit()
+
+    if sent_count > 0:
+        return {"sent": True, "recipients": sent_count}
+    return {"sent": False, "error": last_error or "unknown"}

@@ -7,7 +7,12 @@ import io
 import pytest
 from omegaconf import open_dict
 
-from zotero_arxiv_daily2markdown.utils import glob_match, send_email, extract_tex_code_from_tar
+from zotero_arxiv_daily2markdown.utils import (
+    extract_tex_code_from_tar,
+    glob_match,
+    send_email,
+    send_resend_html,
+)
 from tests.canned_responses import make_stub_smtp
 
 
@@ -214,6 +219,33 @@ def test_send_email_uses_ssl_first_for_port_465(config, monkeypatch):
 
     assert len(sent) == 1
     assert calls == [("ssl", ("localhost", 465), {"timeout": 12.0})]
+
+
+def test_send_resend_html_sends_individual_messages(config, monkeypatch):
+    sent = []
+    with open_dict(config):
+        config.resend_email.enabled = True
+        config.resend_email.api_key = "re_test"
+        config.resend_email.sender_name = "arXiv Daily"
+        config.resend_email.sender_email = "daily@nickelates.uk"
+        config.resend_email.smtp_server = "smtp.resend.com"
+        config.resend_email.smtp_port = 465
+        config.resend_email.smtp_timeout_seconds = 12
+
+    monkeypatch.setattr(smtplib, "SMTP_SSL", make_stub_smtp(sent))
+
+    result = send_resend_html(
+        config,
+        "<html>hello</html>",
+        "first@example.com, second@example.com",
+        "Welcome",
+        label="welcome-zh",
+    )
+
+    assert result == {"sent": True, "recipients": 2}
+    assert [recipients for _, recipients, _ in sent] == [["first@example.com"], ["second@example.com"]]
+    assert all("second@example.com" not in body for _, recipients, body in sent if recipients == ["first@example.com"])
+    assert all("first@example.com" not in body for _, recipients, body in sent if recipients == ["second@example.com"])
 
 
 # ---------------------------------------------------------------------------

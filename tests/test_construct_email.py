@@ -1,6 +1,13 @@
 """Tests for zotero_arxiv_daily2markdown.construct_email: render_email, get_stars, get_block_html."""
 
-from zotero_arxiv_daily2markdown.construct_email import render_email, get_stars, get_block_html, get_empty_html
+from zotero_arxiv_daily2markdown.construct_email import (
+    get_block_html,
+    get_empty_html,
+    get_stars,
+    render_email,
+    render_subscription_welcome_email,
+    subscription_welcome_subject,
+)
 from tests.canned_responses import make_sample_paper
 
 
@@ -82,3 +89,24 @@ def test_render_email_can_include_revision_note():
     paper = make_sample_paper()
     html = render_email([paper], revision_note="昨日修订：2026-05-19")
     assert "昨日修订：2026-05-19" in html
+
+
+def test_render_subscription_welcome_email_zh_contains_project_and_privacy_copy():
+    html = render_subscription_welcome_email("zh")
+
+    assert "订阅成功" in html
+    assert "nickelate superconductors" in html
+    assert "如果当天没有新增论文" in html
+    assert "不会以任何形式向外泄露" in html
+    assert "复旦大学本科大四学生" in html
+    assert subscription_welcome_subject("zh") == "订阅成功：arXiv Daily 镍基超导日报"
+
+
+def test_render_subscription_welcome_email_en_contains_project_and_privacy_copy():
+    html = render_subscription_welcome_email("en")
+
+    assert "Subscription Confirmed" in html
+    assert "nickelate superconductors" in html
+    assert "When there are no new papers" in html
+    assert "will not be disclosed in any form" in html
+    assert "Fudan University" in html

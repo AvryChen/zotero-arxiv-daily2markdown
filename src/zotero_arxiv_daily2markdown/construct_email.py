@@ -354,6 +354,79 @@ def render_emails_resend(
     }
 
 
+_WELCOME_COPY = {
+    "zh": {
+        "lang": "zh-CN",
+        "title": "订阅成功",
+        "subtitle": "欢迎订阅 arXiv Daily: Nickelate Superconductors",
+        "subject": "订阅成功：arXiv Daily 镍基超导日报",
+        "paragraphs": [
+            "你好，欢迎订阅 arXiv Daily: Nickelate Superconductors。",
+            "这个项目会关注 nickelate superconductors 方向的 arXiv 新论文，并自动整理论文链接、相关度、摘要和每日速览。",
+            "如果当天有新的相关论文，我们会发送邮件。如果当天没有新增论文，或者没有论文通过筛选，我们不会发送邮件，避免打扰。",
+            "你的邮箱只会用于接收本项目相关邮件。邮件会逐个发送，其他订阅者看不到你的地址；你的个人信息也不会以任何形式向外泄露。",
+            "这个项目由一名复旦大学本科大四学生独立开发和维护。项目还在持续改进中，欢迎你随时把建议、问题或漏掉的论文发到 support@nickelates.uk。",
+        ],
+        "footer": "如需退订，请发送邮件至 support@nickelates.uk，主题为 unsubscribe。",
+    },
+    "en": {
+        "lang": "en",
+        "title": "Subscription Confirmed",
+        "subtitle": "Welcome to arXiv Daily: Nickelate Superconductors",
+        "subject": "Subscription confirmed: arXiv Daily Nickelate Superconductors",
+        "paragraphs": [
+            "Hello, and welcome to arXiv Daily: Nickelate Superconductors.",
+            "This project tracks new arXiv papers related to nickelate superconductors and sends a concise update with paper links, relevance scores, summaries, and a daily overview.",
+            "When there are new relevant papers, you will receive an email. When there are no new papers, or no papers pass the relevance filter, we will not send an email.",
+            "Your email address is used only for this project. Emails are sent one recipient at a time, so other subscribers cannot see your address. Your personal information will not be disclosed in any form.",
+            "This project is independently developed and maintained by a fourth-year undergraduate student at Fudan University. Feedback, questions, and missing-paper reports are always welcome at support@nickelates.uk.",
+        ],
+        "footer": "To unsubscribe, email support@nickelates.uk with subject unsubscribe.",
+    },
+}
+
+
+def subscription_welcome_subject(language: str = "zh") -> str:
+    """Return the language-specific welcome email subject."""
+    return _WELCOME_COPY.get(language, _WELCOME_COPY["zh"])["subject"]
+
+
+def render_subscription_welcome_email(language: str = "zh") -> str:
+    """Build the manual welcome email sent after a user subscribes."""
+    copy = _WELCOME_COPY.get(language, _WELCOME_COPY["zh"])
+    paragraphs = "\n".join(
+        f"      <p>{html.escape(paragraph)}</p>"
+        for paragraph in copy["paragraphs"]
+    )
+    footer = html.escape(copy["footer"])
+    title = html.escape(copy["title"])
+    subtitle = html.escape(copy["subtitle"])
+
+    return f"""<!DOCTYPE html>
+<html lang="{copy["lang"]}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <style>{_RESEND_CSS}</style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>{title}</h1>
+      <div class="date">{subtitle}</div>
+    </div>
+    <div class="overview">
+{paragraphs}
+    </div>
+    <div class="footer">
+      <p>{footer}</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
 # ── Legacy email (QQ SMTP, unchanged) ──────────────────────────────────────
 
 def render_email(papers:list[Paper], revision_note: str | None = None) -> str:
