@@ -158,6 +158,8 @@ _RESEND_CSS = """
     border: 1px solid #e0d8c8;
   }
   .header {
+    background-color: #8b6914;
+    background: #8b6914;
     background: linear-gradient(135deg, #8b6914 0%, #b8860b 50%, #d4a017 100%);
     padding: 28px 24px; text-align: center;
   }
@@ -224,9 +226,9 @@ _RESEND_FRAMEWORK = f"""<!DOCTYPE html>
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <h1>{{header_title}}</h1>
-      <div class="date">{{date}}</div>
+    <div class="header" style="background-color:#8b6914;background:#8b6914;padding:28px 24px;text-align:center;">
+      <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;letter-spacing:0.5px;">{{header_title}}</h1>
+      <div class="date" style="color:#f7ead0;font-size:13px;margin-top:6px;">{{date}}</div>
     </div>
     {{overview_block}}
     {{paper_blocks}}
@@ -412,9 +414,9 @@ def render_subscription_welcome_email(language: str = "zh") -> str:
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <h1>{title}</h1>
-      <div class="date">{subtitle}</div>
+    <div class="header" style="background-color:#8b6914;background:#8b6914;padding:28px 24px;text-align:center;">
+      <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;letter-spacing:0.5px;">{title}</h1>
+      <div class="date" style="color:#f7ead0;font-size:13px;margin-top:6px;">{subtitle}</div>
     </div>
     <div class="overview">
 {paragraphs}
