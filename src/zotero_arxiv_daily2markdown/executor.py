@@ -820,7 +820,7 @@ class Executor:
             self.config.executor.target_date = original_target_date
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
-        max_attempts = max(1, int(self.config.executor.get("zotero_max_attempts", 4)))
+        max_attempts = max(1, int(self.config.executor.get("zotero_max_attempts", 10)))
         base_delay = max(0.0, float(self.config.executor.get("zotero_retry_base_seconds", 15)))
         max_delay = max(base_delay, float(self.config.executor.get("zotero_retry_max_seconds", 60)))
 
