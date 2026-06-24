@@ -1,6 +1,7 @@
 from loguru import logger
 from pyzotero import zotero
 from omegaconf import DictConfig, ListConfig, OmegaConf
+import httpx
 import html
 import json
 import os
@@ -819,6 +820,28 @@ class Executor:
             self.config.executor.target_date = original_target_date
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
+        max_attempts = max(1, int(self.config.executor.get("zotero_max_attempts", 4)))
+        base_delay = max(0.0, float(self.config.executor.get("zotero_retry_base_seconds", 15)))
+        max_delay = max(base_delay, float(self.config.executor.get("zotero_retry_max_seconds", 60)))
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self._fetch_zotero_corpus_once()
+            except (httpx.TransportError, OSError) as exc:
+                if attempt == max_attempts:
+                    logger.error(f"Zotero fetch failed after {max_attempts} attempts: {exc}")
+                    raise
+
+                wait_seconds = min(max_delay, base_delay * (2 ** (attempt - 1)))
+                logger.warning(
+                    f"Zotero fetch attempt {attempt}/{max_attempts} failed: {exc}. "
+                    f"Retrying in {wait_seconds:g} seconds."
+                )
+                time.sleep(wait_seconds)
+
+        raise RuntimeError("Zotero fetch retry loop exited unexpectedly")
+
+    def _fetch_zotero_corpus_once(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
         zot = zotero.Zotero(self.config.zotero.user_id, 'user', self.config.zotero.api_key)
         collections = zot.everything(zot.collections())

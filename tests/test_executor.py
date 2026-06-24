@@ -190,6 +190,54 @@ def test_fetch_zotero_corpus_paper_with_zero_collections(config, monkeypatch):
     assert corpus[0].paths == []
 
 
+def test_fetch_zotero_corpus_retries_transport_errors(config, monkeypatch):
+    import httpx
+    from tests.canned_responses import make_stub_zotero_client
+
+    attempts = 0
+    waits = []
+    stub_zot = make_stub_zotero_client()
+
+    def make_client(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise httpx.ConnectError("temporary DNS failure")
+        return stub_zot
+
+    config.executor.zotero_max_attempts = 4
+    config.executor.zotero_retry_base_seconds = 2
+    config.executor.zotero_retry_max_seconds = 10
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", make_client)
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.time.sleep", waits.append)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    corpus = executor.fetch_zotero_corpus()
+
+    assert len(corpus) == 2
+    assert attempts == 3
+    assert waits == [2, 4]
+
+
+def test_fetch_zotero_corpus_does_not_retry_programming_errors(config, monkeypatch):
+    attempts = 0
+
+    def make_client(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("bad response shape")
+
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", make_client)
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    with pytest.raises(ValueError, match="bad response shape"):
+        executor.fetch_zotero_corpus()
+
+    assert attempts == 1
+
+
 def test_executor_rejects_non_arxiv_sources(config):
     from omegaconf import open_dict
 

@@ -117,6 +117,9 @@ executor:
   continue_on_error: false # 批量回溯中某一天失败时，是否继续处理后续日期。
   skip_existing: false # 批量回溯时，如果中英文 Hugo 文件都已存在，是否跳过该日期。
   fetch_strict: true # arXiv 抓取完整性校验发现缺页或缺 ID 时，是否直接失败。
+  zotero_max_attempts: 4 # Zotero API 遇到 DNS、连接或超时错误时的最大尝试次数。
+  zotero_retry_base_seconds: 15 # Zotero API 网络错误首次重试前的等待秒数，之后指数增长。
+  zotero_retry_max_seconds: 60 # Zotero API 单次重试等待的最大秒数。
   cross_validate_dailyarxiv: false # 是否用 dailyarxiv.com 的 query.php 对指定日期的 arXiv 结果做交叉验证。
   cross_validation_mode: warn # dailyarxiv 交叉验证不一致时的处理方式。示例：'warn' 或 'fail'
   arxiv_page_size: 800 # 指定日期抓取时 arXiv API 每页请求数量。
