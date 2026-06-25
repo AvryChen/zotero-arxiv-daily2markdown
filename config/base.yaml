@@ -10,6 +10,7 @@ source:
     include_cross_list: true # 是否包含订阅分类中的 arXiv 交叉列表论文。示例：true
 
 email:
+  enabled: false # 是否启用旧 SMTP 邮件链路。默认关闭；Resend 不受此开关影响。
   sender: ??? # 用于发送邮件的邮箱账号。示例：abc@qq.com
   receiver: ??? # 接收论文列表的邮箱账号。示例：abc@outlook.com
   smtp_server: ??? # 发件邮箱的 SMTP 服务器，可向邮箱服务商查询。示例：smtp.qq.com

@@ -85,9 +85,7 @@ OPENAI_API_KEY=your_llm_api_key
 OPENAI_API_BASE=https://api.openai.com/v1
 MODEL=gpt-4o-mini
 
-SENDER=your_email@example.com
-RECEIVER=receiver_email@example.com
-SENDER_PASSWORD=your_smtp_password
+LEGACY_EMAIL_ENABLED=false
 
 HUGO_OUTPUT_DIR=/path/to/your/hugo/content
 HUGO_AUTO_PUSH=false
@@ -369,7 +367,7 @@ GitHub Actions workflows:
 - `.github/workflows/ci.yml` runs the test suite on pushes and pull requests.
 - `.github/workflows/keep-alive.yml` periodically updates a keep-alive file for scheduled workflows.
 
-For the main workflow, configure secrets such as `ZOTERO_ID`, `ZOTERO_KEY`, `SENDER`, `RECEIVER`, `SENDER_PASSWORD`, `OPENAI_API_KEY`, and `OPENAI_API_BASE`. Configure `CUSTOM_CONFIG` as a repository variable containing the YAML content that should replace `config/custom.yaml`.
+For the main workflow, configure secrets such as `ZOTERO_ID`, `ZOTERO_KEY`, `OPENAI_API_KEY`, and `OPENAI_API_BASE`. The legacy SMTP email path is forced off in GitHub Actions. Configure `CUSTOM_CONFIG` as a repository variable containing the YAML content that should replace `config/custom.yaml`.
 
 ## Development
 

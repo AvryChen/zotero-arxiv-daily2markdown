@@ -481,6 +481,11 @@ class Executor:
     def _error_email_enabled(self) -> bool:
         return to_bool(self.config.executor.get("error_email_enabled", True))
 
+    def _legacy_email_enabled(self) -> bool:
+        if not hasattr(self.config, "email"):
+            return False
+        return to_bool(self.config.email.get("enabled", False))
+
     def _last_fetch_report_summary(self) -> str:
         summaries = []
         for source, retriever in self.retrievers.items():
@@ -490,7 +495,7 @@ class Executor:
         return "\n".join(summaries) if summaries else "No arXiv fetch report was recorded."
 
     def _send_error_email(self, *, stage: str, exc: Exception, target_date: str | None = None) -> None:
-        if not self._error_email_enabled():
+        if not self._error_email_enabled() or not self._legacy_email_enabled():
             return
 
         mode = target_date or self.config.executor.get("target_date") or "latest"
@@ -719,6 +724,9 @@ class Executor:
         return expected_urls == existing_zh == existing_en
 
     def _send_revision_email(self, target_date: str, papers: list[Paper]) -> None:
+        if not self._legacy_email_enabled():
+            logger.info(f"Legacy SMTP email disabled; skipping revision email for {target_date}.")
+            return
         note = f"昨日修订：{target_date}"
         logger.info(f"Sending revision email for {target_date}")
         try:
@@ -935,7 +943,7 @@ class Executor:
             result.skipped = True
             return result
 
-        if send_email_enabled:
+        if send_email_enabled and self._legacy_email_enabled():
             logger.info("Sending email...")
             try:
                 email_content = render_email(artifacts.papers)
@@ -944,8 +952,10 @@ class Executor:
                 logger.info("Email sent successfully")
             except Exception as exc:
                 logger.warning(f"Email failed; continuing without email: {exc}")
-        else:
+        elif not send_email_enabled:
             logger.info("Skipping email for this run.")
+        else:
+            logger.info("Legacy SMTP email disabled; skipping.")
 
         # ── Resend bilingual email (new, independent) ─────────────────
         if self._resend_email_enabled():

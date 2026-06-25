@@ -4,11 +4,12 @@ zotero:
   include_path: null # 也可以设置 glob 规则列表，例如：["2026/survey/**","2026/reading-group/**"]
 
 email:
-  sender: ${oc.env:SENDER}
-  receiver: ${oc.env:RECEIVER}
+  enabled: ${oc.env:LEGACY_EMAIL_ENABLED,"false"}
+  sender: ${oc.env:SENDER,""}
+  receiver: ${oc.env:RECEIVER,""}
   smtp_server: smtp.qq.com
   smtp_port: 465
-  sender_password: ${oc.env:SENDER_PASSWORD}
+  sender_password: ${oc.env:SENDER_PASSWORD,""}
 
 resend_email:
   enabled: ${oc.env:RESEND_ENABLED,"false"}

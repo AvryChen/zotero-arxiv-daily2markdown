@@ -314,6 +314,7 @@ def test_run_end_to_end(config, monkeypatch):
         config.executor.source = ["arxiv"]
         config.executor.reranker = "api"
         config.executor.send_empty = False
+        config.email.enabled = True
 
     # 1. Stub pyzotero
     stub_zot = make_stub_zotero_client()
@@ -402,6 +403,7 @@ def test_run_no_papers_send_empty_true(config, monkeypatch):
         config.executor.source = ["arxiv"]
         config.executor.reranker = "api"
         config.executor.send_empty = True
+        config.email.enabled = True
 
     stub_zot = make_stub_zotero_client()
     monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.zotero.Zotero", lambda *a, **kw: stub_zot)
@@ -1036,6 +1038,7 @@ def test_run_single_day_sends_error_email_on_failure(config, monkeypatch):
 
     with open_dict(config):
         config.executor.error_email_enabled = True
+        config.email.enabled = True
 
     sent = []
     executor = Executor.__new__(Executor)
@@ -1147,6 +1150,69 @@ def test_run_date_range_can_send_email(config):
     assert send_flags == [True]
 
 
+def test_run_single_day_skips_legacy_email_but_keeps_resend(config, monkeypatch):
+    from omegaconf import open_dict
+    from tests.canned_responses import make_sample_paper
+
+    with open_dict(config):
+        config.email.enabled = False
+        config.resend_email.enabled = True
+        config.resend_email.api_key = "re_test"
+        config.resend_email.recipients_zh = "zh@example.com"
+        config.resend_email.recipients_en = "en@example.com"
+
+    paper = make_sample_paper()
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor._build_single_day_artifacts = lambda corpus: SingleDayArtifacts(
+        result=DailyRunResult(target_date="2026-06-24", retrieved_count=1, selected_count=1),
+        papers=[paper],
+        overview_zh="overview zh",
+        overview_en="overview en",
+    )
+
+    legacy_calls = []
+    resend_calls = []
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda *args, **kwargs: legacy_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_send_resend_emails",
+        lambda artifacts: resend_calls.append(artifacts) or True,
+    )
+    monkeypatch.setattr("zotero_arxiv_daily2markdown.executor.export_to_hugo", lambda *args, **kwargs: None)
+
+    result = executor._run_single_day([])
+
+    assert result.emailed is False
+    assert legacy_calls == []
+    assert len(resend_calls) == 1
+
+
+def test_legacy_email_disabled_skips_error_and_revision_emails(config, monkeypatch):
+    from omegaconf import open_dict
+
+    with open_dict(config):
+        config.email.enabled = False
+        config.executor.error_email_enabled = True
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.retrievers = {}
+    calls = []
+    monkeypatch.setattr(
+        "zotero_arxiv_daily2markdown.executor.send_email",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    executor._send_error_email(stage="test", exc=RuntimeError("failed"))
+    executor._send_revision_email("2026-06-24", [])
+
+    assert calls == []
+
+
 def test_run_default_daily_processes_yesterday_target_and_cleans_empty_notices(config):
     executor = Executor.__new__(Executor)
     executor.config = config
@@ -1241,6 +1307,7 @@ def test_previous_day_correction_skips_when_hugo_urls_match(config, monkeypatch,
 
     with open_dict(config):
         config.hugo.output_dir = str(tmp_path)
+        config.email.enabled = True
 
     executor = Executor.__new__(Executor)
     executor.config = config
@@ -1286,6 +1353,7 @@ def test_previous_day_correction_overwrites_and_emails_when_hugo_urls_change(con
 
     with open_dict(config):
         config.hugo.output_dir = str(tmp_path)
+        config.email.enabled = True
 
     executor = Executor.__new__(Executor)
     executor.config = config
