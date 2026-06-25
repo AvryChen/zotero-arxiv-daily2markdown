@@ -364,12 +364,7 @@ run_daily.bat
 
 GitHub Actions workflows:
 
-- `.github/workflows/main.yml` runs the digest workflow manually with repository variables and secrets.
-- `.github/workflows/test.yml` runs the same digest entrypoint manually against the checked-out repository.
 - `.github/workflows/ci.yml` runs the test suite on pushes and pull requests.
-- `.github/workflows/keep-alive.yml` periodically updates a keep-alive file for scheduled workflows.
-
-For the main workflow, configure secrets such as `ZOTERO_ID`, `ZOTERO_KEY`, `SENDER`, `RECEIVER`, `SENDER_PASSWORD`, `OPENAI_API_KEY`, and `OPENAI_API_BASE`. Configure `CUSTOM_CONFIG` as a repository variable containing the YAML content that should replace `config/custom.yaml`.
 
 ## Development
 
