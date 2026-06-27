@@ -17,7 +17,7 @@ Zotero arXiv Daily to Markdown 会从 arXiv 构建每日论文速览。它用你
 - 仅对领域 accepted 论文抓全文，按 HTML、PDF、TeX source 顺序尝试。
 - 输出规范化 capture 数据包，包括 `papers.jsonl`、`domain_decisions.json`、rejected 审计记录、run report、TXT、PDF 和每篇论文的 meta JSON。
 - 通过兼容 Chat Completions 的 API 生成中英文摘要、作者机构和每日概览。
-- 导出 HTML 邮件摘要和中英文 Hugo 文章；邮件发送是 best-effort，失败不会阻塞 Hugo 导出。
+- 为 `zh`/`zh_hant`/`en` 三个列表导出 HTML 邮件摘要，并导出中英文 Hugo 文章；邮件发送是 best-effort，失败不会阻塞 Hugo 导出。
 - 每次默认定时运行前，自动清理旧的“昨天没有新论文”Hugo 提示页。
 - 支持历史日期区间回溯、跳过已存在输出、失败后继续、日期间冷却。
 - 可只让 arXiv 请求走 HTTP/SOCKS 代理，例如 V2rayN。

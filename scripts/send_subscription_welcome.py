@@ -27,7 +27,7 @@ def _load_config():
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--language", choices=["zh", "en"], default="zh")
+    parser.add_argument("--language", choices=["zh", "zh_hant", "en"], default="zh")
     parser.add_argument("--recipient", action="append", default=[], help="Recipient email. Can be repeated.")
     parser.add_argument("--recipients", default="", help="Comma, semicolon, or newline separated recipients.")
     args = parser.parse_args()

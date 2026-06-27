@@ -119,7 +119,7 @@ def get_stars(score:float):
         return '<div class="star-wrapper">'+full_star * full_star_num + half_star * half_star_num + '</div>'
 
 
-# ── Resend email (new, bilingual) ──────────────────────────────────────────
+# ── Resend email (new, zh/zh_hant/en) ──────────────────────────────────────
 
 _RESEND_LABELS = {
     "zh": {
@@ -133,6 +133,18 @@ _RESEND_LABELS = {
         "no_papers": "今日无相关论文，休息一下！",
         "unsubscribe": "如需退订，请发送邮件至 support@nickelates.uk，主题为 'unsubscribe'。",
         "subject": "arXiv Daily 镍基超导日报",
+    },
+    "zh_hant": {
+        "header_title": "arXiv Daily: 鎳基超導日報",
+        "overview_label": "今日速覽",
+        "relevance": "相關度",
+        "tldr": "摘要",
+        "authors": "作者",
+        "affiliations": "機構",
+        "pdf": "查看PDF",
+        "no_papers": "今日無相關論文，休息一下！",
+        "unsubscribe": "如需退訂，請發送郵件至 support@nickelates.uk，主旨為 'unsubscribe'。",
+        "subject": "arXiv Daily 鎳基超導日報",
     },
     "en": {
         "header_title": "arXiv Daily: Nickelate Superconductors",
@@ -270,7 +282,12 @@ def _render_one_paper_resend(p: Paper, labels: dict, language: str, *, max_autho
     meta_html = "<br>".join(meta_parts) if meta_parts else ""
 
     # Pick language-specific TLDR
-    tldr_text = p.tldr_en if language == "en" else p.tldr
+    if language == "en":
+        tldr_text = p.tldr_en
+    elif language == "zh_hant":
+        tldr_text = p.tldr_zh_hant or p.tldr
+    else:
+        tldr_text = p.tldr
     tldr_text = tldr_text or ""
 
     return f"""
@@ -328,7 +345,8 @@ def render_email_resend(
         paper_blocks = "\n".join(parts)
 
     email_html = _RESEND_FRAMEWORK
-    email_html = email_html.replace("{lang}", "zh-CN" if language == "zh" else "en")
+    lang_attr = "zh-CN" if language == "zh" else ("zh-Hant" if language == "zh_hant" else "en")
+    email_html = email_html.replace("{lang}", lang_attr)
     email_html = email_html.replace("{title}", html.escape(title))
     email_html = email_html.replace("{header_title}", labels["header_title"])
     email_html = email_html.replace("{date}", today)
@@ -343,15 +361,22 @@ def render_emails_resend(
     papers: list[Paper],
     overview_zh: str = "",
     overview_en: str = "",
+    overview_zh_hant: str = "",
     revision_note: str | None = None,
 ) -> dict[str, str]:
-    """Build both zh and en Resend emails.
+    """Build zh, zh_hant, and en Resend emails.
 
     Returns:
-        dict with 'zh' and 'en' HTML strings.
+        dict with 'zh', 'zh_hant', and 'en' HTML strings.
     """
     return {
         "zh": render_email_resend(papers, language="zh", overview=overview_zh, revision_note=revision_note),
+        "zh_hant": render_email_resend(
+            papers,
+            language="zh_hant",
+            overview=overview_zh_hant,
+            revision_note=revision_note,
+        ),
         "en": render_email_resend(papers, language="en", overview=overview_en, revision_note=revision_note),
     }
 
@@ -370,6 +395,20 @@ _WELCOME_COPY = {
             "这个项目由一名复旦大学本科大四学生独立开发和维护。项目还在持续改进中，欢迎你随时把建议、问题或漏掉的论文发到 support@nickelates.uk。",
         ],
         "footer": "如需退订，请发送邮件至 support@nickelates.uk，主题为 unsubscribe。",
+    },
+    "zh_hant": {
+        "lang": "zh-Hant",
+        "title": "訂閱成功",
+        "subtitle": "歡迎訂閱 arXiv Daily: Nickelate Superconductors",
+        "subject": "訂閱成功：arXiv Daily 鎳基超導日報",
+        "paragraphs": [
+            "你好，歡迎訂閱 arXiv Daily: Nickelate Superconductors。",
+            "這個項目會關注 nickelate superconductors 方向的 arXiv 新論文，並自動整理論文連結、相關度、摘要和每日速覽。",
+            "如果當天有新的相關論文，我們會發送郵件。如果當天沒有新增論文，或者沒有論文通過篩選，我們不會發送郵件，避免打擾。",
+            "你的郵箱只會用於接收本項目相關郵件。郵件會逐個發送，其他訂閱者看不到你的地址；你的個人資訊也不會以任何形式向外洩露。",
+            "這個項目由一名復旦大學本科大四學生獨立開發和維護。項目還在持續改進中，歡迎你隨時把建議、問題或漏掉的論文發到 support@nickelates.uk。",
+        ],
+        "footer": "如需退訂，請發送郵件至 support@nickelates.uk，主旨為 unsubscribe。",
     },
     "en": {
         "lang": "en",

@@ -20,6 +20,7 @@ resend_email:
   smtp_port: 465
   smtp_timeout_seconds: 20
   recipients_zh: ${oc.env:RECIPIENTS_ZH,""}
+  recipients_zh_hant: ${oc.env:RECIPIENTS_ZH_HANT,""}
   recipients_en: ${oc.env:RECIPIENTS_EN,""}
   unsubscribe_note: ${oc.env:RESEND_UNSUBSCRIBE_NOTE,"To unsubscribe, email support@nickelates.uk with subject 'unsubscribe'."}
 

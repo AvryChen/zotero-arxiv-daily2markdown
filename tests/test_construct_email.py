@@ -5,6 +5,7 @@ from zotero_arxiv_daily2markdown.construct_email import (
     get_empty_html,
     get_stars,
     render_email,
+    render_emails_resend,
     render_subscription_welcome_email,
     subscription_welcome_subject,
 )
@@ -110,3 +111,37 @@ def test_render_subscription_welcome_email_en_contains_project_and_privacy_copy(
     assert "When there are no new papers" in html
     assert "will not be disclosed in any form" in html
     assert "Fudan University" in html
+
+
+def test_render_resend_email_includes_traditional_chinese_version():
+    paper = make_sample_paper(
+        tldr="简体摘要",
+        tldr_zh_hant="繁體摘要",
+        tldr_en="English summary",
+        score=4.5,
+    )
+
+    htmls = render_emails_resend(
+        [paper],
+        overview_zh="简体总览",
+        overview_zh_hant="繁體總覽",
+        overview_en="English overview",
+    )
+
+    assert set(htmls) == {"zh", "zh_hant", "en"}
+    assert 'lang="zh-Hant"' in htmls["zh_hant"]
+    assert "鎳基超導日報" in htmls["zh_hant"]
+    assert "繁體摘要" in htmls["zh_hant"]
+    assert "繁體總覽" in htmls["zh_hant"]
+    assert "简体摘要" not in htmls["zh_hant"]
+
+
+def test_render_subscription_welcome_email_zh_hant_contains_project_and_privacy_copy():
+    html = render_subscription_welcome_email("zh_hant")
+
+    assert "訂閱成功" in html
+    assert "nickelate superconductors" in html
+    assert "如果當天沒有新增論文" in html
+    assert "不會以任何形式向外洩露" in html
+    assert "復旦大學本科大四學生" in html
+    assert subscription_welcome_subject("zh_hant") == "訂閱成功：arXiv Daily 鎳基超導日報"

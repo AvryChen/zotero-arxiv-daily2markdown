@@ -17,7 +17,7 @@ For maintainers and future AI coding agents, read [the maintenance manual](./doc
 - Fetch full text only after domain acceptance, trying HTML, PDF, then TeX source.
 - Write a normalized capture package with `papers.jsonl`, `domain_decisions.json`, rejected-candidate audit records, run reports, TXT, PDF, and per-paper meta JSON.
 - Generate Chinese/English summaries, affiliations, and a daily overview through a Chat Completions-compatible API.
-- Export an HTML email digest and bilingual Hugo posts; email delivery is best-effort and will not block Hugo export.
+- Export HTML email digests for `zh`/`zh_hant`/`en` lists and bilingual Hugo posts; email delivery is best-effort and will not block Hugo export.
 - Before each default scheduled run, remove stale "No new papers yesterday" Hugo notices from earlier empty days.
 - Backfill historical date ranges with skip-existing, continue-on-error, and day-level cooldown controls.
 - Route only arXiv requests through an optional HTTP/SOCKS proxy such as V2rayN.

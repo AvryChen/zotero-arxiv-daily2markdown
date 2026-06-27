@@ -42,6 +42,7 @@ class Paper:
     full_text: Optional[str] = None
     tldr: Optional[str] = None
     tldr_en: Optional[str] = None
+    tldr_zh_hant: Optional[str] = None
     affiliations: Optional[list[str]] = None
     score: Optional[float] = None
     published_at: Optional[datetime] = None
@@ -172,6 +173,41 @@ class Paper:
             logger.warning(f"Failed to translate tldr of {self.url}: {e}")
             self.tldr_en = self.abstract
             return self.tldr_en
+
+    def generate_traditional_chinese_tldr(self, openai_client: OpenAI, llm_params: dict) -> str:
+        if self.tldr_zh_hant:
+            return self.tldr_zh_hant
+        if not self.tldr:
+            return "暫無摘要。"
+        try:
+            prompt = (
+                "請將下面這段學術論文中文摘要翻譯成繁體中文。\n"
+                "請使用自然、專業的繁體中文，保留必要英文術語。\n"
+                "只輸出一段正文，不要標題、標籤、條列或額外說明。\n\n"
+                f"{self.tldr}"
+            )
+            response = openai_client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是學術論文翻譯助手。請只輸出繁體中文正文，不要加任何說明。",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                **llm_params.get('generation_kwargs', {})
+            )
+            self.tldr_zh_hant = re.sub(
+                r"^(?:\*\*)?(?:TLDR|Summary|總結|摘要)(?:\*\*)?\s*[:：]\s*",
+                "",
+                response.choices[0].message.content.strip(),
+                flags=re.IGNORECASE,
+            )
+            self.tldr_zh_hant = re.sub(r"\s+", " ", self.tldr_zh_hant).strip()
+            return self.tldr_zh_hant
+        except Exception as e:
+            logger.warning(f"Failed to translate traditional Chinese tldr of {self.url}: {e}")
+            self.tldr_zh_hant = self.tldr
+            return self.tldr_zh_hant
 
     def _generate_affiliations_with_llm(self, openai_client:OpenAI,llm_params:dict) -> Optional[list[str]]:
         if self.full_text is not None:

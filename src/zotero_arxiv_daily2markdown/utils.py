@@ -156,7 +156,7 @@ def send_email(config:DictConfig, html:str, subject: str | None = None):
         server.quit()
 
 
-# ── Resend email sender (new, bilingual, separate from legacy QQ SMTP) ─────
+# ── Resend email sender (new, separate from legacy QQ SMTP) ────────────────
 
 def _parse_recipients(raw: str) -> list[str]:
     """Parse a comma/semicolon/newline-separated recipient string into a list.
@@ -174,10 +174,11 @@ def send_email_resend(
     config: DictConfig,
     html_zh: str,
     html_en: str,
+    html_zh_hant: str | None = None,
     *,
     subject_date: str | None = None,
 ) -> dict:
-    """Send bilingual daily emails to separate zh/en lists via Resend SMTP.
+    """Send daily emails to separate zh/zh_hant/en lists via Resend SMTP.
 
     Does **not** touch the legacy ``send_email()`` (QQ SMTP) code path.
 
@@ -185,13 +186,15 @@ def send_email_resend(
         config: Hydra config; expects a ``resend_email`` section.
         html_zh: Chinese email HTML body (with overview + TLDRs).
         html_en: English email HTML body.
+        html_zh_hant: Traditional Chinese email HTML body.
         subject_date: ``YYYY-MM-DD`` date label for the subject line.
 
     Returns:
-        ``{"zh": {...}, "en": {...}}`` with per-language send results.
+        ``{"zh": {...}, "zh_hant": {...}, "en": {...}}`` with per-language send results.
     """
     cfg = config.resend_email
     recipients_zh = _parse_recipients(cfg.recipients_zh)
+    recipients_zh_hant = _parse_recipients(cfg.get("recipients_zh_hant", ""))
     recipients_en = _parse_recipients(cfg.recipients_en)
 
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -199,15 +202,22 @@ def send_email_resend(
 
     _LABELS = {
         "zh": {"subject": f"arXiv Daily 镍基超导日报 — {date_label}"},
+        "zh_hant": {"subject": f"arXiv Daily 鎳基超導日報 — {date_label}"},
         "en": {"subject": f"arXiv Daily: Nickelate Superconductors — {date_label}"},
     }
 
-    results: dict = {"zh": None, "en": None}
+    results: dict = {"zh": None, "zh_hant": None, "en": None}
 
     for lang, html_body, recipients in [
         ("zh", html_zh, recipients_zh),
+        ("zh_hant", html_zh_hant, recipients_zh_hant),
         ("en", html_en, recipients_en),
     ]:
+        if html_body is None:
+            if recipients:
+                results[lang] = {"sent": False, "reason": "no_html"}
+                continue
+            html_body = ""
         results[lang] = send_resend_html(
             config,
             html_body,
@@ -230,7 +240,7 @@ def send_resend_html(
     """Send one Resend HTML email body to explicit recipients.
 
     This is for manual emails such as subscription welcome messages. It does
-    not read the configured zh/en daily lists unless the caller passes them in.
+    not read the configured daily lists unless the caller passes them in.
     """
     cfg = config.resend_email
     if isinstance(recipients, str):

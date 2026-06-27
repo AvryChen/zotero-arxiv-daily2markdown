@@ -61,6 +61,16 @@ def test_ranking_text_can_use_english_tldr():
     assert result == "Title\n\nAbstract\n\nEnglish"
 
 
+def test_generate_traditional_chinese_tldr_translates_existing_chinese_summary(llm_params):
+    client = make_stub_openai_client()
+    paper = make_sample_paper(tldr="中文摘要")
+
+    result = paper.generate_traditional_chinese_tldr(client, llm_params)
+
+    assert result == "Hello! How can I assist you today?"
+    assert paper.tldr_zh_hant == result
+
+
 # ---------------------------------------------------------------------------
 # generate_affiliations
 # ---------------------------------------------------------------------------

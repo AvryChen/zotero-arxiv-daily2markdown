@@ -11,6 +11,7 @@ from zotero_arxiv_daily2markdown.utils import (
     extract_tex_code_from_tar,
     glob_match,
     send_email,
+    send_email_resend,
     send_resend_html,
 )
 from tests.canned_responses import make_stub_smtp
@@ -246,6 +247,42 @@ def test_send_resend_html_sends_individual_messages(config, monkeypatch):
     assert [recipients for _, recipients, _ in sent] == [["first@example.com"], ["second@example.com"]]
     assert all("second@example.com" not in body for _, recipients, body in sent if recipients == ["first@example.com"])
     assert all("first@example.com" not in body for _, recipients, body in sent if recipients == ["second@example.com"])
+
+
+def test_send_email_resend_only_sends_configured_traditional_chinese_list(config, monkeypatch):
+    sent = []
+    with open_dict(config):
+        config.resend_email.enabled = True
+        config.resend_email.api_key = "re_test"
+        config.resend_email.sender_name = "arXiv Daily"
+        config.resend_email.sender_email = "daily@nickelates.uk"
+        config.resend_email.smtp_server = "smtp.resend.com"
+        config.resend_email.smtp_port = 465
+        config.resend_email.smtp_timeout_seconds = 12
+        config.resend_email.recipients_zh = ""
+        config.resend_email.recipients_zh_hant = "chandlerchen05@outlook.com"
+        config.resend_email.recipients_en = ""
+
+    monkeypatch.setattr(smtplib, "SMTP_SSL", make_stub_smtp(sent))
+
+    result = send_email_resend(
+        config,
+        "<html>简体</html>",
+        "<html>English</html>",
+        "<html>繁體</html>",
+        subject_date="2026-06-27",
+    )
+
+    assert result["zh"]["sent"] is False
+    assert result["zh_hant"] == {"sent": True, "recipients": 1}
+    assert result["en"]["sent"] is False
+    assert len(sent) == 1
+    sender, recipients, body = sent[0]
+    assert sender == "daily@nickelates.uk"
+    assert recipients == ["chandlerchen05@outlook.com"]
+    assert "chandlerchen05@outlook.com" in body
+    assert "zh@example.com" not in body
+    assert "en@example.com" not in body
 
 
 # ---------------------------------------------------------------------------

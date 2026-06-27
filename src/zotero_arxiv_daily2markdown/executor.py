@@ -108,6 +108,7 @@ class SingleDayArtifacts:
     papers: list[Paper]
     overview_zh: str
     overview_en: str
+    overview_zh_hant: str = ""
     accepted_papers: list[Paper] | None = None
     candidate_papers: list[Paper] | None = None
     domain_decisions: list[DomainDecision] | None = None
@@ -184,6 +185,30 @@ class Executor:
                 as_completed(futures),
                 total=len(futures),
                 desc="Generating TLDRs for longlisted papers",
+            ):
+                future.result()
+
+    def _generate_traditional_chinese_tldrs(self, papers: list[Paper]) -> None:
+        if not papers:
+            return
+
+        llm_concurrency = int(self.config.executor.get("llm_concurrency", 3))
+        llm_concurrency = max(1, llm_concurrency)
+
+        if llm_concurrency == 1 or len(papers) <= 1:
+            for paper in tqdm(papers, desc="Generating Traditional Chinese TLDRs"):
+                paper.generate_traditional_chinese_tldr(self.openai_client, self.config.llm)
+            return
+
+        with ThreadPoolExecutor(max_workers=min(llm_concurrency, len(papers))) as pool:
+            futures = [
+                pool.submit(paper.generate_traditional_chinese_tldr, self.openai_client, self.config.llm)
+                for paper in papers
+            ]
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="Generating Traditional Chinese TLDRs",
             ):
                 future.result()
 
@@ -609,9 +634,14 @@ class Executor:
             result=result,
         )
 
+        zh_hant_requested = self._resend_zh_hant_requested()
+        if zh_hant_requested:
+            self._generate_traditional_chinese_tldrs(display_papers)
+
         logger.info("Generating daily overview...")
         overview_zh = ""
         overview_en = ""
+        overview_zh_hant = ""
         high_score_papers = [p for p in display_papers if p.score is not None and p.score >= 3.0]
         if high_score_papers:
             papers_info = []
@@ -627,6 +657,10 @@ class Executor:
             role = prompt_cfg.get("role", "专业的学术编辑")
             overview_template = prompt_cfg.get("overview_zh", "请总结以下论文: {topic}")
             translation_prompt = prompt_cfg.get("translation_en", "Please translate:")
+            translation_prompt_zh_hant = prompt_cfg.get(
+                "translation_zh_hant",
+                "請將以下中文每日論文速覽翻譯成自然、專業的繁體中文。只輸出翻譯正文：",
+            )
 
             prompt_zh = overview_template.format(topic=topic) + f"\n\n{papers_text}"
 
@@ -640,17 +674,36 @@ class Executor:
                 )
                 overview_zh = response.choices[0].message.content
 
-                prompt_en = f"{translation_prompt}\n\n{overview_zh}"
-                response_en = self.openai_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": "You are a professional translator for academic papers."},
-                        {"role": "user", "content": prompt_en},
-                    ],
-                    **self.config.llm.get("generation_kwargs", {}),
-                )
-                overview_en = response_en.choices[0].message.content
             except Exception as exc:
                 logger.error(f"Failed to generate overview: {exc}")
+
+            if overview_zh:
+                try:
+                    prompt_en = f"{translation_prompt}\n\n{overview_zh}"
+                    response_en = self.openai_client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": "You are a professional translator for academic papers."},
+                            {"role": "user", "content": prompt_en},
+                        ],
+                        **self.config.llm.get("generation_kwargs", {}),
+                    )
+                    overview_en = response_en.choices[0].message.content
+                except Exception as exc:
+                    logger.error(f"Failed to translate English overview: {exc}")
+
+            if overview_zh and zh_hant_requested:
+                try:
+                    prompt_zh_hant = f"{translation_prompt_zh_hant}\n\n{overview_zh}"
+                    response_zh_hant = self.openai_client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": "你是學術論文翻譯助手。請只輸出繁體中文正文。"},
+                            {"role": "user", "content": prompt_zh_hant},
+                        ],
+                        **self.config.llm.get("generation_kwargs", {}),
+                    )
+                    overview_zh_hant = response_zh_hant.choices[0].message.content
+                except Exception as exc:
+                    logger.error(f"Failed to translate Traditional Chinese overview: {exc}")
 
         daily_json_path = export_daily_json(
             accepted_papers=accepted_papers,
@@ -677,6 +730,7 @@ class Executor:
             papers=display_papers,
             overview_zh=overview_zh,
             overview_en=overview_en,
+            overview_zh_hant=overview_zh_hant,
             accepted_papers=accepted_papers,
             candidate_papers=longlist_papers,
             domain_decisions=domain_decisions,
@@ -736,7 +790,7 @@ class Executor:
             logger.warning(f"Revision email failed for {target_date}; continuing without email: {exc}")
 
     def _send_resend_emails(self, artifacts: "SingleDayArtifacts") -> bool:
-        """Send bilingual daily emails via Resend to separate zh/en recipient lists.
+        """Send daily emails via Resend to separate zh/zh_hant/en recipient lists.
 
         Returns:
             ``True`` if at least one email was sent successfully.
@@ -746,6 +800,7 @@ class Executor:
                 artifacts.papers,
                 overview_zh=artifacts.overview_zh,
                 overview_en=artifacts.overview_en,
+                overview_zh_hant=artifacts.overview_zh_hant,
             )
         except Exception as exc:
             logger.warning(f"Resend: failed to build email HTML: {exc}")
@@ -757,6 +812,7 @@ class Executor:
                 self.config,
                 htmls["zh"],
                 htmls["en"],
+                htmls["zh_hant"],
                 subject_date=str(target_date) if target_date else None,
             )
         except Exception as exc:
@@ -773,6 +829,21 @@ class Executor:
 
         return any_sent
 
+    def _resend_zh_hant_requested(self) -> bool:
+        """Check whether Traditional Chinese Resend email needs generated content."""
+        if not hasattr(self.config, "resend_email"):
+            return False
+        cfg = self.config.resend_email
+        if not to_bool(cfg.get("enabled", False)):
+            return False
+        api_key = cfg.get("api_key")
+        if not api_key or api_key == "???":
+            return False
+        raw = cfg.get("recipients_zh_hant", "")
+        if isinstance(raw, str):
+            return bool(raw.strip())
+        return bool(raw)
+
     def _resend_email_enabled(self) -> bool:
         """Check whether Resend email sending is configured and enabled."""
         if not hasattr(self.config, "resend_email"):
@@ -784,8 +855,15 @@ class Executor:
             logger.info("Resend: API key not configured, skipping.")
             return False
         recipients_zh_raw = cfg.get("recipients_zh", "")
+        recipients_zh_hant_raw = cfg.get("recipients_zh_hant", "")
         recipients_en_raw = cfg.get("recipients_en", "")
-        if not recipients_zh_raw.strip() and not recipients_en_raw.strip():
+
+        def has_recipients(raw) -> bool:
+            if isinstance(raw, str):
+                return bool(raw.strip())
+            return bool(raw)
+
+        if not any(has_recipients(raw) for raw in (recipients_zh_raw, recipients_zh_hant_raw, recipients_en_raw)):
             logger.info("Resend: no recipients configured, skipping.")
             return False
         return True
@@ -957,9 +1035,9 @@ class Executor:
         else:
             logger.info("Legacy SMTP email disabled; skipping.")
 
-        # ── Resend bilingual email (new, independent) ─────────────────
+        # ── Resend list emails (new, independent) ─────────────────
         if self._resend_email_enabled():
-            logger.info("Sending Resend bilingual emails...")
+            logger.info("Sending Resend list emails...")
             try:
                 self._send_resend_emails(artifacts)
             except Exception as exc:

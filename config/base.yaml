@@ -27,6 +27,7 @@ resend_email:
   smtp_port: 465 # Resend SMTP 端口 (SSL)。
   smtp_timeout_seconds: 20 # SMTP 连接超时时间。
   recipients_zh: [] # 中文版日报收件人列表。在 custom.yaml 中通过环境变量配置。
+  recipients_zh_hant: [] # 繁体中文版日报收件人列表。在 custom.yaml 中通过环境变量配置。
   recipients_en: [] # 英文版日报收件人列表。在 custom.yaml 中通过环境变量配置。
   unsubscribe_note: "To unsubscribe, email support@nickelates.uk with subject 'unsubscribe'." # 退订说明。
 
@@ -45,6 +46,7 @@ prompt:
   role: "专业的学术编辑" # AI 生成内容时扮演的角色。
   overview_zh: "请根据以下关联度较高的论文信息（包含标题、作者、机构和摘要），为今天的 {topic} 领域论文速览生成一段整体介绍。该介绍将被放在每日推送文章的开头，请用专业的口吻，大概总结一下今天的研究亮点。请你注意，今天有可能没有 {topic} 领域的内容；如有，或有少数篇涉及到一点点与之有关的，都请总结关联点。在你总结时，无需面面俱到，只需简单介绍其亮点和主要结论即可。语言要求简洁、专业，以一整段话输出，不要分段、不要做自我介绍和项目介绍。例如： 好的，根据您提供的论文列表，今天的每日速览中，确实有直接关于 nickelate superconductors 领域的研究。同时，也有几篇虽然不直接以镍酸盐为研究对象，但其探讨的物理机制或研究方法与镍基超导领域当前的核心问题高度相关，值得重点关注。 以下是为今日推文准备的整体介绍： — 各位读者好，欢迎阅读今日的镍基超导领域论文速览。 今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。在[1]中，一项基于DFT+D……只要从“今日的亮点工作聚焦于对混合型Ruddlesden-Popper镍酸盐电子结构的深入理解。”开始输出即可。"
   translation_en: "Please translate the following Chinese daily paper overview into professional English. Only output the translated English text:"
+  translation_zh_hant: "請將以下中文每日論文速覽翻譯成自然、專業的繁體中文。只輸出翻譯正文："
 
 domain:
   topic: "nickelate superconductors" # 领域判定主题；默认与 prompt.topic 保持一致。
